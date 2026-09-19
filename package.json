@@ -1,0 +1,15 @@
+{
+  "name": "moyi",
+  "version": "3.0.0",
+  "description": "墨忆 — Agent 记忆层，Supabase 云端 + Vercel 部署 + MCP 协议",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mcp": "node mcp-server.js",
+    "test": "node test.js"
+  },
+  "engines": { "node": ">=18" },
+  "keywords": ["mcp", "memory", "ai", "agent", "supabase", "vercel"],
+  "author": "画青霜",
+  "license": "MIT"
+}
