@@ -1,15 +1,21 @@
 {
   "name": "moyi",
-  "version": "3.0.0",
-  "description": "墨忆 — Agent 记忆层，Supabase 云端 + Vercel 部署 + MCP 协议",
+  "version": "3.2.0",
+  "description": "墨忆 — Agent 记忆层：MCP 协议 + pgvector 语义检索与去重 + 衰减遗忘 + 关联图谱，存储可换 Supabase 或自托管 PostgREST，支持 Docker",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "mcp": "node mcp-server.js",
-    "test": "node test.js"
+    "test": "node test/dedupe-calibration.js && node test/run.js",
+    "test:unit": "node test/dedupe-calibration.js",
+    "test:integration": "node test/run.js",
+    "jwt": "node scripts/gen-jwt.js",
+    "docker:up": "docker compose --profile local up -d --build",
+    "docker:up:cloud": "docker compose --profile cloud up -d --build",
+    "docker:down": "docker compose --profile local --profile cloud down"
   },
   "engines": { "node": ">=18" },
-  "keywords": ["mcp", "memory", "ai", "agent", "supabase", "vercel"],
+  "keywords": ["mcp", "memory", "ai", "agent", "supabase", "postgrest", "postgresql", "pgvector", "embeddings", "docker", "vercel"],
   "author": "画青霜",
   "license": "MIT"
 }

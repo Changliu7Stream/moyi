@@ -1,5 +1,19 @@
+/**
+ * ⚠️ 最初的手工 MCP 冒烟脚本，会真实注册 Agent 并写入记忆。
+ *    默认禁用，避免误写生产库。日常回归用 npm test。
+ *    确要运行: MOYI_ALLOW_LIVE_TEST=1 node test/legacy-mcp-smoke.js
+ */
+if (process.env.MOYI_ALLOW_LIVE_TEST !== '1') {
+  console.error('\n[已拦截] test/legacy-mcp-smoke.js 会向真实数据库写入数据。');
+  console.error('  跑离线回归请用: npm test');
+  console.error('  确认要连真实库: MOYI_ALLOW_LIVE_TEST=1 node test/legacy-mcp-smoke.js\n');
+  process.exit(2);
+}
+
 const { spawn } = require('child_process');
-const srv = spawn('node', ['server.js'], { stdio: ['pipe','pipe','pipe'] });
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const srv = spawn('node', [path.join(ROOT, 'server.js')], { cwd: ROOT, stdio: ['pipe','pipe','pipe'] });
 
 setTimeout(async () => {
   const BASE = 'http://127.0.0.1:3906';

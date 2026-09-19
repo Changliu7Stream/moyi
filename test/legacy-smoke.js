@@ -1,5 +1,21 @@
+/**
+ * ⚠️ 这是最初的手工冒烟脚本，会真实注册 Agent 并写入记忆。
+ *    默认已禁用：直接运行会退出，避免误把生产库当测试场。
+ *    确实要跑（连的是 .env.local 里配置的那个库）时显式加确认：
+ *        MOYI_ALLOW_LIVE_TEST=1 node test/legacy-smoke.js
+ *    日常回归请用不碰真实数据库的：npm test
+ */
+if (process.env.MOYI_ALLOW_LIVE_TEST !== '1') {
+  console.error('\n[已拦截] test/legacy-smoke.js 会向真实数据库写入数据。');
+  console.error('  跑离线回归请用: npm test');
+  console.error('  确认要连真实库: MOYI_ALLOW_LIVE_TEST=1 node test/legacy-smoke.js\n');
+  process.exit(2);
+}
+
 const { spawn } = require('child_process');
-const srv = spawn('node', ['server.js'], { stdio: ['pipe','pipe','pipe'] });
+const path = require('path');
+const ROOT = path.join(__dirname, '..');
+const srv = spawn('node', [path.join(ROOT, 'server.js')], { cwd: ROOT, stdio: ['pipe','pipe','pipe'] });
 srv.stderr.on('data', d => process.stderr.write('[srv] ' + d));
 
 setTimeout(async () => {
@@ -7,7 +23,7 @@ setTimeout(async () => {
   const log = (t, d) => console.log('\n=== ' + t + ' ===\n' + (typeof d === 'string' ? d : JSON.stringify(d, null, 2)));
 
   // 1. master 注册
-  let r = await fetch(BASE + '/api/agents/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:'青霜掌柜', master_code:'moyi-master'}) });
+  let r = await fetch(BASE + '/api/agents/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:'青霜掌柜', master_code: process.env.MOYI_LIVE_MASTER_CODE || ''}) });
   const master = await r.json();
   log('master注册', { id: master.id, name: master.name, role: master.role });
   const MK = master.api_key;
@@ -53,7 +69,7 @@ setTimeout(async () => {
 
   // 11. MCP remember 工具
   console.log('\n=== MCP remember ===');
-  const mcp = spawn('node', ['mcp-server.js'], { stdio:['pipe','pipe','pipe'], env:{ ...process.env, MOYI_API: BASE, MOYI_KEY: MK } });
+  const mcp = spawn('node', [path.join(ROOT, 'mcp-server.js')], { cwd: ROOT, stdio:['pipe','pipe','pipe'], env:{ ...process.env, MOYI_API: BASE, MOYI_KEY: MK } });
   let out = '';
   mcp.stdout.on('data', d => out += d.toString());
   const send = m => mcp.stdin.write(JSON.stringify(m) + '\n');

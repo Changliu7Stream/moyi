@@ -28,15 +28,16 @@
  *   }
  */
 
-const http = require('http');
 const readline = require('readline');
+const { request: httpRequest } = require('http');
+const { request: httpsRequest } = require('https');
 
 // ── 配置 ──────────────────────────────────────────────
 
 const MOYI_API = process.env.MOYI_API || 'http://127.0.0.1:3906';
 const MOYI_KEY = process.env.MOYI_KEY || '';
 const SERVER_NAME = 'moyi';
-const SERVER_VERSION = '2.0.0';
+const SERVER_VERSION = '3.2.0';
 
 if (!MOYI_KEY) {
   process.stderr.write('[moyi] WARNING: MOYI_KEY 未设置，所有请求将被拒绝。\n');
@@ -101,13 +102,13 @@ const TOOLS = [
   },
   {
     name: 'search_memory',
-    description: '搜索记忆。支持全文匹配和关键词分词。结果按相关性 + 重要性 + 时效性排序。',
+    description: '搜索记忆（向量语义 + 关键词混合检索）。换个说法也能搜到。结果按 语义相关度×重要性×时效性 排序，返回带 _score 的融合分。',
     inputSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: '搜索关键词。',
+          description: '搜索关键词或一句自然语言描述。',
         },
         limit: {
           type: 'number',
@@ -154,6 +155,68 @@ const TOOLS = [
       properties: {},
     },
   },
+  {
+    name: 'forget',
+    description: '删除一条记忆。用于用户明确要求「忘掉这件事」，或发现记忆是错的、过时的。删除不可恢复。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: '要删除的记忆 ID（mem_ 开头）。可先用 search_memory 定位。',
+        },
+        reason: {
+          type: 'string',
+          description: '删除原因，仅用于回执确认，不会写入存储。',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'memory_stats',
+    description: '查看当前记忆库概况：总数、按重要性分布、同步状态、向量覆盖情况。适合在会话开始时了解已有记忆规模。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'memory_health',
+    description: '记忆衰减体检：查看哪些记忆因长期未被访问而面临降级、哪些是遗忘候选。默认只看不动（不写库）。用于回答「我是不是该忘掉些什么」这类问题。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        apply: {
+          type: 'boolean',
+          description: 'true = 真的执行降级（不可撤销，但只降一级且永不删除、high 不参与）。默认 false 仅预览。',
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: 'memory_graph',
+    description: '取记忆关联图谱（节点=记忆，边=共享标签或共享事实锚点）。用于回答「这件事和哪些有关联」，也可用 focus 只看某条记忆的邻域。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        focus: {
+          type: 'string',
+          description: '可选。以某条记忆 ID 为中心，只返回它的邻域子图。',
+        },
+        limit: {
+          type: 'number',
+          description: '参与构图的记忆条数上限，默认 200。',
+          default: 200,
+        },
+        min_weight: {
+          type: 'number',
+          description: '连边阈值 0~1，越大越严格。默认 0.5。',
+        },
+      },
+    },
+  },
 ];
 
 // ── HTTP 请求 ──────────────────────────────────────────
@@ -162,7 +225,10 @@ function apiRequest(pathStr, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(pathStr, MOYI_API);
     const data = body ? JSON.stringify(body) : null;
-    const req = http.request(url, {
+    // MOYI_API 可能是 http（本地）也可能是 https（Vercel 线上），
+    // 早先写死 http.request，指向线上地址时会静默连不上。
+    const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = doRequest(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
@@ -174,9 +240,10 @@ function apiRequest(pathStr, method = 'GET', body = null) {
       res.on('data', c => chunks += c);
       res.on('end', () => {
         try { resolve(JSON.parse(chunks)); }
-        catch { resolve({ raw: chunks }); }
+        catch { resolve({ raw: chunks, _status: res.statusCode }); }
       });
     });
+    req.setTimeout(30000, () => req.destroy(new Error('请求超时（30s）')));
     req.on('error', reject);
     if (data) req.write(data);
     req.end();
@@ -196,6 +263,18 @@ async function executeTool(name, args) {
       });
       if (res.error) {
         return { content: [{ type: 'text', text: '存储失败: ' + (res.error || '未知错误') }], isError: true };
+      }
+      // 命中去重：不是「没记住」，而是「合并进已有记忆」，必须区别报告
+      if (res.deduped) {
+        const m = res.memory || {};
+        return {
+          content: [{
+            type: 'text',
+            text: '已合并到已有记忆（未新增）。\n  ID: ' + m.id + '\n  相似度: ' + res.similarity
+              + '\n  字面重合: ' + res.lexical + '\n  重要性: ' + m.importance
+              + '\n  摘要: ' + (m.summary || '') + '\n  说明: ' + (res.reason || ''),
+          }],
+        };
       }
       if (!res.stored) {
         return {
@@ -218,6 +297,9 @@ async function executeTool(name, args) {
         importance: args.importance,
         tags: args.tags,
       });
+      if (res.error) {
+        return { content: [{ type: 'text', text: '存储失败: ' + res.error }], isError: true };
+      }
       return {
         content: [{
           type: 'text',
@@ -229,7 +311,11 @@ async function executeTool(name, args) {
     case 'search_memory': {
       const res = await apiRequest('/api/memories/search', 'POST', {
         query: args.query,
+        limit: args.limit || 10,
       });
+      if (res.error) {
+        return { content: [{ type: 'text', text: '搜索失败: ' + res.error }], isError: true };
+      }
       const results = (res.results || []).slice(0, args.limit || 10);
       if (!results.length) {
         return {
@@ -237,10 +323,14 @@ async function executeTool(name, args) {
         };
       }
       const text = results.map((m, i) =>
-        '[' + (i + 1) + '] ' + m.importance + ' | ' + m.summary + '\n    ID: ' + m.id + '\n    标签: ' + ((m.tags || []).join(', ') || '无') + '\n    时间: ' + m.created_at + '\n    内容: ' + m.content
+        '[' + (i + 1) + '] ' + m.importance + ' | 相关度 ' + (m._score != null ? m._score : '-') + ' | ' + m.summary
+        + '\n    ID: ' + m.id + '\n    标签: ' + ((m.tags || []).join(', ') || '无')
+        + '\n    时间: ' + m.created_at + '\n    内容: ' + m.content
       ).join('\n\n---\n\n');
+      const meta = '\n\n（检索模式: ' + (res.mode || '-') + '，扫描 ' + (res.scanned || 0)
+        + ' 条，已向量化 ' + (res.vectorized || 0) + ' 条）';
       return {
-        content: [{ type: 'text', text: '找到 ' + results.length + ' 条相关记忆：\n\n' + text }],
+        content: [{ type: 'text', text: '找到 ' + results.length + ' 条相关记忆：\n\n' + text + meta }],
       };
     }
 
@@ -283,6 +373,102 @@ async function executeTool(name, args) {
         content: [{
           type: 'text',
           text: '同步完成。已推送 ' + res.synced + ' 条记忆至云端。' + (res.synced ? '这些记忆现在跨工具可见。' : '没有待同步的重要记忆。'),
+        }],
+      };
+    }
+
+    case 'forget': {
+      const id = String(args.id || '');
+      // 只接受形如 mem_xxx 的 ID，避免把任意字符串拼进查询路径
+      if (!/^mem_[\w-]{4,64}$/.test(id)) {
+        return { content: [{ type: 'text', text: '记忆 ID 格式不合法（应以 mem_ 开头）。可先用 search_memory 定位。' }], isError: true };
+      }
+      const res = await apiRequest('/api/memories/' + id, 'DELETE');
+      if (res.deleted) {
+        return { content: [{ type: 'text', text: '已抹去记忆 ' + id + (args.reason ? '（原因：' + args.reason + '）' : '') + '。' }] };
+      }
+      return { content: [{ type: 'text', text: '删除失败：' + (res.error || '该记忆可能不存在或不属于当前 Agent。') }], isError: true };
+    }
+
+    case 'memory_stats': {
+      const res = await apiRequest('/api/stats', 'GET');
+      if (res.error) return { content: [{ type: 'text', text: '读取失败: ' + res.error }], isError: true };
+      const e = res.embedding || {};
+      return {
+        content: [{
+          type: 'text',
+          text: '记忆库概况（' + ((res.agent && res.agent.name) || '当前 Agent') + '）\n'
+            + '  总计: ' + res.total + ' 条\n'
+            + '  重要 / 常态 / 轻微: ' + res.high + ' / ' + res.medium + ' / ' + res.low + '\n'
+            + '  已同步 / 待同步: ' + res.synced + ' / ' + res.unsynced + '\n'
+            + '  已向量化: ' + (res.vectorized || 0) + ' 条' + (res.needs_embedding ? '（' + res.needs_embedding + ' 条待回填）' : '') + '\n'
+            + '  向量模式: ' + (e.mode || '-') + (e.provider ? ' (' + e.provider + ')' : ' （本地特征哈希，建议接入 embedding provider 提升语义召回')
+            + '\n  标签: ' + ((res.allTags || []).slice(0, 20).join(', ') || '无'),
+        }],
+      };
+    }
+
+    case 'memory_health': {
+      if (args.apply === true) {
+        const res = await apiRequest('/api/decay/apply', 'POST', { confirm: true });
+        if (res.error) return { content: [{ type: 'text', text: '执行失败：' + res.error }], isError: true };
+        if (res.applied !== true) {
+          return { content: [{ type: 'text', text: '未执行：' + (res.hint || '服务端拒绝') }], isError: true };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: '衰减已执行。降级 ' + res.downgraded + ' 条'
+              + (res.failed ? '，失败 ' + res.failed + ' 条' : '')
+              + '。另有 ' + res.forget_eligible + ' 条遗忘候选——未删除，'
+              + '需要你逐条确认后用 forget 处理。',
+          }],
+        };
+      }
+      const res = await apiRequest('/api/decay/preview', 'GET');
+      if (res.error) return { content: [{ type: 'text', text: '读取失败: ' + res.error }], isError: true };
+      const dg = res.would_downgrade || [];
+      const fg = res.would_forget || [];
+      const line = m => '  ' + m.id + ' [' + m.importance + '] ' + m.age_days + ' 天未动 · 访问 '
+        + m.access_count + ' 次 · 活力 ' + m.vitality + ' — ' + (m.summary || '').slice(0, 40);
+      return {
+        content: [{
+          type: 'text',
+          text: '衰减体检（半衰期 ' + res.half_life_days + ' 天，遗忘窗口 ' + res.forget_after_days + ' 天）\n'
+            + '  扫描 ' + res.scanned + ' 条：稳定 ' + res.keep + ' 条，钉住 ' + res.pinned + ' 条\n\n'
+            + '面临降级（' + dg.length + ' 条，仅 medium→low，high 永不自动降级）：\n'
+            + (dg.slice(0, 15).map(line).join('\n') || '  无') + '\n\n'
+            + '遗忘候选（' + fg.length + ' 条，仅 low 且长期无人访问；本接口不删除任何东西）：\n'
+            + (fg.slice(0, 15).map(line).join('\n') || '  无')
+            + (dg.length > 15 || fg.length > 15 ? '\n\n（各列表仅显示前 15 条）' : '')
+            + '\n\n未写库。要真正执行降级请再调用一次并传 apply=true。',
+        }],
+      };
+    }
+
+    case 'memory_graph': {
+      let q = '/api/graph?limit=' + (args.limit || 200);
+      if (args.focus) q += '&focus=' + encodeURIComponent(args.focus);
+      if (args.min_weight != null) q += '&min_weight=' + args.min_weight;
+      const res = await apiRequest(q, 'GET');
+      if (res.error) return { content: [{ type: 'text', text: '构图失败: ' + res.error }], isError: true };
+      const byId = {};
+      (res.nodes || []).forEach(n => { byId[n.id] = n; });
+      const edges = (res.edges || []).map(e =>
+        '  ' + ((byId[e.from] || {}).summary || e.from).slice(0, 24) + ' ↔ '
+        + ((byId[e.to] || {}).summary || e.to).slice(0, 24)
+        + '（' + e.weight + '，共有 ' + (e.via || []).join('/') + '）');
+      const orphans = (res.nodes || []).filter(n => !n.degree);
+      const head = res.focus
+        ? '记忆 ' + res.focus + ' 的关联邻域'
+        : '记忆图谱：' + (res.nodes || []).length + ' 节点 / ' + (res.edges || []).length + ' 边'
+          + (res.stats ? '，密度 ' + res.stats.density : '');
+      return {
+        content: [{
+          type: 'text',
+          text: head + '\n\n' + (edges.join('\n') || '  （无边：共享标签太少或阈值太高）')
+            + (orphans.length ? '\n\n未连属者（' + orphans.length + ' 条，与其余记忆无共享标签/事实）：\n'
+              + orphans.slice(0, 10).map(n => '  ' + n.id + ' — ' + (n.summary || '').slice(0, 40)).join('\n') : ''),
         }],
       };
     }

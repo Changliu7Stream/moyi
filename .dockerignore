@@ -1,0 +1,14 @@
+.git
+.env
+.env.local
+.env.*
+!.env.example
+node_modules
+test
+*.log
+SECURITY-MIGRATION.md
+data
+Dockerfile
+docker-compose.yml
+docker-entrypoint.sh
+.dockerignore

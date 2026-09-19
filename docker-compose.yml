@@ -1,0 +1,100 @@
+# 墨忆 · docker-compose
+#
+# 两种互斥的起法（都只暴露一个 3906）：
+#   docker compose --profile cloud up -d    只起墨忆，连外部 Supabase
+#   docker compose --profile local up -d    起完整自托管栈：Postgres + PostgREST + 墨忆
+#
+# 两个 profile 不要同时开：moyi 与 moyi-local 都要占 3906，
+# 同时起会直接端口冲突（compose 会报错，这是有意的响失败而不是静默二选一）。
+#
+# 凭据一律不进本文件、不进镜像：通过 ./data/moyi-env/*.env 挂载注入。
+
+x-moyi-common: &moyi-common
+  build: .
+  ports:
+    - "${MOYI_HOST_PORT:-3906}:3906"
+  volumes:
+    # 凭据目录：只读挂载，容器内无法篡改
+    - ./data/moyi-env:/data/moyi-env:ro
+  # 凭据的主通道是上面那个挂载目录（入口脚本解析）；
+  # env_file 只是备用路径，文件不存在时不报错（需 compose v2.20+）。
+  env_file:
+    - path: ./moyi.env
+      required: false
+  restart: unless-stopped
+  # server.js 全程只 readFileSync，不写盘 → 根文件系统可以锁成只读
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  # ── 云端：墨忆连外部 Supabase ──────────────────────────
+  moyi:
+    <<: *moyi-common
+    profiles: ["cloud"]
+
+  # ── 自托管：原生 Postgres + pgvector ───────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    profiles: ["local"]
+    environment:
+      POSTGRES_DB: moyi
+      POSTGRES_USER: moyi
+      POSTGRES_PASSWORD: ${MOYI_PG_PASSWORD:?请在 .env 或 shell 中设置 MOYI_PG_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # ⚠ 只精确挂载这两个文件，不要挂整个 ./sql：
+      #   docker-entrypoint-initdb.d 会执行目录下**所有** .sql，
+      #   而 sql/vector-search.sql 是 Supabase 专用（开 RLS 且默认拒绝 anon），
+      #   一起跑完自托管栈会变成「每条读都 0 行、且完全不报错」。
+      - ./sql/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+      - ./docker/init/10-roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moyi -d moyi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── PostgREST：把 Postgres 暴露成墨忆认识的 REST 接口 ──
+  postgrest:
+    image: postgrest/postgrest:v13.0.1
+    profiles: ["local"]
+    environment:
+      # 连接串从环境变量拼，不明文写密码
+      PGRST_DB_URI: postgres://moyi:${MOYI_PG_PASSWORD}@postgres:5432/moyi
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_OPENAPI_SERVER_PROXY_URI: http://127.0.0.1:3001
+      # 内网默认不启 JWT：此时所有请求都以 web_anon 身份执行，
+      # 墨忆传来的 Bearer 串会被忽略（只要非空即可）。
+      # 若要把 3001 暴露到公网，务必设 PGRST_JWT_SECRET 并用
+      #   MOYI_JWT_SECRET=xxx node scripts/gen-jwt.js
+      # 签发的 JWT 作为 MOYI_DB_TOKEN。
+      # PGRST_JWT_SECRET: ${MOYI_JWT_SECRET}
+      PGRST_SERVER_PORT: "3000"
+    ports:
+      # 只绑 127.0.0.1：PostgREST 没有 agent 隔离概念，绝不该直接对外
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 自托管下的墨忆：连本地 PostgREST 而非外部 Supabase ──
+  # MOYI_DB_URL 不含 *.supabase.co，服务层会自动不加 /rest/v1 前缀
+  moyi-local:
+    <<: *moyi-common
+    profiles: ["local"]
+    environment:
+      MOYI_DB_BACKEND: postgrest
+      MOYI_DB_URL: http://postgrest:3000
+      # token 仍需非空：由挂载的 env 文件提供 MOYI_DB_TOKEN
+    depends_on:
+      - postgrest
+
+volumes:
+  pgdata:

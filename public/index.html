@@ -60,6 +60,8 @@
       <span class="agent-name" id="agentName"></span>
       <span class="role-badge hidden" id="roleBadge">掌柜</span>
       <button id="agentsBtn" class="btn btn-ghost btn-sm hidden">账簿</button>
+      <button id="decayBtn" class="btn btn-ghost btn-sm">衰减体检</button>
+      <button id="auditBtn" class="btn btn-ghost btn-sm hidden">审计簿</button>
       <button id="mcpCfgBtn" class="btn btn-ghost btn-sm">MCP 配置</button>
       <button id="logoutBtn" class="btn btn-ghost btn-sm">退出</button>
     </div>
@@ -81,6 +83,7 @@
         <input type="text" id="searchInput" class="search-input" placeholder="搜索记忆...">
         <button id="searchBtn" class="btn btn-ghost">寻</button>
       </div>
+      <div id="searchMeta" class="search-meta hidden"></div>
       <div class="filter-row">
         <button class="filter-btn active" data-filter="">全部</button>
         <button class="filter-btn" data-filter="high">重要</button>
@@ -89,12 +92,29 @@
         <button class="filter-btn" data-filter="unsynced">未同步</button>
       </div>
       <button id="syncAllBtn" class="btn btn-ghost block mt">同步全部</button>
+      <div class="view-toggle mt">
+        <button id="viewListBtn" class="btn btn-ghost btn-sm active">墨录</button>
+        <button id="viewGraphBtn" class="btn btn-ghost btn-sm">墨格</button>
+      </div>
     </aside>
 
     <section class="right-panel">
-      <h2 class="block-title">墨录</h2>
-      <div id="memoryList" class="memory-list">
-        <div class="empty-state"><div class="empty-circle"></div><p>尚无记忆。Agent 会通过 MCP 自行存取。</p></div>
+      <div id="listView">
+        <h2 class="block-title">墨录</h2>
+        <div id="memoryList" class="memory-list">
+          <div class="empty-state"><div class="empty-circle"></div><p>尚无记忆。Agent 会通过 MCP 自行存取。</p></div>
+        </div>
+      </div>
+      <div id="graphView" class="hidden">
+        <h2 class="block-title">墨格</h2>
+        <div id="graphContainer" class="graph-container">
+          <div class="empty-state"><div class="empty-circle"></div><p>尚无记忆可绘图谱。Agent 存入记忆后，关联自现。</p></div>
+        </div>
+        <div id="graphTooltip" class="graph-tooltip hidden"></div>
+        <div id="isolatedSection" class="isolated-section hidden">
+          <h3 class="block-title">未连属者</h3>
+          <div id="isolatedList" class="isolated-list"></div>
+        </div>
       </div>
     </section>
   </main>
@@ -112,6 +132,7 @@
     </div>
     <div id="detailContent" class="detail-content"></div>
     <div id="detailTags" class="detail-tags"></div>
+    <div id="detailVitality" class="detail-vitality"></div>
     <div class="modal-footer">
       <span id="detailMeta" class="detail-meta"></span>
       <button id="detailDeleteBtn" class="btn btn-danger btn-sm">抹去</button>
@@ -119,13 +140,13 @@
   </div>
 </div>
 
-<!-- Agent 管理弹窗 -->
+<!-- Agent 管理弹窗（仅掌柜可见） -->
 <div id="agentsModal" class="modal hidden">
   <div class="modal-backdrop"></div>
   <div class="modal-content">
     <div class="modal-header">
-      <span class="importance-badge medium">管理</span>
-      <span class="detail-time">Agent 列表</span>
+      <span class="importance-badge medium">账簿</span>
+      <span class="detail-time">Agent 管理</span>
       <button class="modal-close" id="closeAgents">&times;</button>
     </div>
     <div class="mcp-body">
@@ -160,17 +181,32 @@
   </div>
 </div>
 
-<!-- Agent 管理弹窗（仅掌柜可见） -->
-<div id="agentsModal" class="modal hidden">
+<!-- 衰减体检弹窗 -->
+<div id="decayModal" class="modal hidden">
   <div class="modal-backdrop"></div>
-  <div class="modal-content">
+  <div class="modal-content modal-wide">
     <div class="modal-header">
-      <span class="importance-badge medium">账簿</span>
-      <span class="detail-time">Agent 管理</span>
-      <button class="modal-close" id="closeAgents">&times;</button>
+      <span class="importance-badge medium">衰减体检</span>
+      <span class="detail-time">记忆时效一览</span>
+      <button class="modal-close" id="closeDecay">&times;</button>
     </div>
-    <div class="agents-body">
-      <div id="agentsList" class="agents-list"></div>
+    <div class="mcp-body" id="decayBody">
+      <p class="empty-hint">加载中…</p>
+    </div>
+  </div>
+</div>
+
+<!-- 审计簿弹窗 -->
+<div id="auditModal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content modal-wide">
+    <div class="modal-header">
+      <span class="importance-badge high">审计簿</span>
+      <span class="detail-time">操作留痕</span>
+      <button class="modal-close" id="closeAudit">&times;</button>
+    </div>
+    <div class="mcp-body" id="auditBody">
+      <p class="empty-hint">加载中…</p>
     </div>
   </div>
 </div>
