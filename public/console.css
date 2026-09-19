@@ -1,0 +1,72 @@
+/* ═══════════════════════════════════════════════════
+   墨忆 · 管理台样式
+   接着 style.css 的水墨变量走，只补管理台自己需要的壳。
+   这里没有一条选择器是装饰：每个类都对应 console.html 里
+   一个要在一屏手机上看清、点准的操作位。
+   ═══════════════════════════════════════════════════ */
+
+/* ── 引导页 / 登录页的字段壳 ── */
+.field-label{display:block;font-size:12px;letter-spacing:.12em;color:var(--ink-fade);font-weight:700;margin:14px 0 6px;}
+.field-note{font-size:11px;line-height:1.7;color:var(--ink-mist);margin:-6px 0 12px;}
+.auth-card .field-note + .auth-input{margin-top:6px;}
+.check-row{display:flex;align-items:flex-start;gap:8px;margin:14px 0 6px;font-size:13px;color:var(--ink);cursor:pointer;}
+.check-row input{margin-top:3px;flex-shrink:0;accent-color:var(--ink);}
+.check-row span{line-height:1.6;}
+.notice{background:var(--paper-2);border:1px solid var(--line);border-left:3px solid var(--ink-fade);border-radius:2px;padding:10px 14px;font-size:12px;line-height:1.7;color:var(--ink-fade);margin:12px 0;}
+
+/* ── 标签页：复用 .tab-btn 的字形，换掉它在卡片里的下划线布局 ── */
+.c-tabs{display:flex;gap:0;padding:0 48px;border-bottom:1px solid var(--line);position:relative;z-index:1;overflow-x:auto;}
+.c-tabs .tab-btn{flex:0 0 auto;padding:14px 22px;border-bottom-width:2px;}
+
+/* 顶栏里那个「Agent 账本」是 <a>，套 .btn 默认是 inline，内边距会塌 */
+.top-right a.btn{display:inline-block;line-height:1.5;text-decoration:none;}
+
+/* ── 主体 ── */
+.c-main{padding:28px 48px 56px;position:relative;z-index:1;max-width:1100px;margin:0 auto;}
+.c-pane .mt{margin-top:32px;}
+
+/* 一行里的输入：让它们并排，但窄屏自动回退成竖排 */
+.c-form{display:flex;gap:8px;align-items:flex-start;margin:14px 0 20px;flex-wrap:wrap;}
+.c-form .auth-input{flex:1;min-width:160px;margin-bottom:0;}
+.c-form select.auth-input{flex:0 0 auto;min-width:120px;cursor:pointer;}
+.c-form .btn{flex:0 0 auto;height:41px;}
+
+/* ── 列表 ── */
+.c-list{display:flex;flex-direction:column;gap:8px;}
+.c-row{display:flex;align-items:center;gap:14px;padding:12px 16px;background:rgba(255,255,255,.6);border:1px solid var(--line);border-radius:2px;flex-wrap:wrap;}
+.c-row:hover{border-color:var(--ink-ghost);}
+.c-row-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;flex-wrap:wrap;}
+.c-row-main strong{font-size:14px;color:var(--ink);font-weight:700;word-break:break-all;}
+.c-row-meta{font-size:11px;color:var(--ink-mist);white-space:nowrap;}
+.c-row-act{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+.c-row-act .btn{padding:5px 12px;font-size:11px;}
+
+/* 列表被当成提示位复用时（say($('agList'), …)）至少别像坏掉的行 */
+.c-list:not(:has(.c-row)){font-size:12px;color:var(--ink-mist);line-height:1.7;}
+
+/* ── 徽章 ── */
+.c-badge{font-size:10px;letter-spacing:.1em;padding:2px 8px;border:1px solid var(--line);border-radius:2px;color:var(--ink-mist);background:var(--paper);}
+.c-badge.master{border-color:var(--vermilion);color:var(--vermilion);}
+.c-badge.off{border-color:var(--ink-ghost);color:var(--ink-ghost);text-decoration:line-through;}
+
+/* ── 设置页 ── */
+.c-settings{max-width:560px;}
+.c-settings .auth-input{margin-bottom:4px;}
+.c-settings .btn{margin-top:18px;}
+
+/* ── MCP 配置块：比账本里的 .mcp-config 更窄，跟着钥匙一起出现 ── */
+.mcp-cfg{background:var(--ink);color:#d4d0c8;padding:14px;border-radius:2px;font-size:11px;line-height:1.6;overflow-x:auto;font-family:'Courier New',monospace;margin-top:10px;white-space:pre;}
+
+/* ── 移动端 ── */
+@media(max-width:960px){
+  .c-tabs{padding:0 24px;}
+  .c-main{padding:24px 24px 48px;}
+}
+@media(max-width:720px){
+  .c-tabs{padding:0 16px;}
+  .c-tabs .tab-btn{padding:12px 14px;font-size:13px;}
+  .c-main{padding:18px 16px 40px;}
+  .c-form .btn{width:100%;}
+  .c-row{padding:12px 14px;gap:10px;}
+  .c-row-act{width:100%;}
+}

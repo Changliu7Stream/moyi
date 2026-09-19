@@ -27,8 +27,21 @@ REVOKE ALL ON DATABASE moyi FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.agents  TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.memories TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.settings TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admins TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_sessions TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.match_memories(vector(384), uuid, int, float) TO web_anon, authenticated;
+
+-- ⚠ 自托管栈新增 admins 之后，「PostgREST 不能暴露公网」这条前提变重了。
+--   以前拖到 agents.api_key_hash 也不够用：那是 128 位随机 key 的 sha256，
+--   离线爆破不可行。现在 admins.password_hash 是**人挑的口令**的 scrypt 哈希，
+--   拿到就等于拿到一份可离线爆破的包（scrypt 参数在哈希里，爆破成本已知）。
+--   admin_sessions.token_hash 同理不可逆，但 token 本身是 bearer 凭据，
+--   能读表就能读全部会话。
+--   本栈没有数据库级的第二重隔离（不开 RLS 的代价，见下），
+--   所以：要把管理端点暴露到不可信网络，请改用 Supabase 那份带 RLS 的 SQL，
+--   或自己在 admins / admin_sessions / settings 上写策略。
 
 -- 注意：本文件**不开 RLS**。自托管栈的信任边界是「PostgREST 只对墨忆服务暴露，
 -- 由墨忆负责 agent 隔离」。若你把 PostgREST 端口直接暴露到公网，必须自己补

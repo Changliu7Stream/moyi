@@ -37,7 +37,7 @@ const { request: httpsRequest } = require('https');
 const MOYI_API = process.env.MOYI_API || 'http://127.0.0.1:3906';
 const MOYI_KEY = process.env.MOYI_KEY || '';
 const SERVER_NAME = 'moyi';
-const SERVER_VERSION = '3.2.0';
+const SERVER_VERSION = '3.3.0';
 
 if (!MOYI_KEY) {
   process.stderr.write('[moyi] WARNING: MOYI_KEY 未设置，所有请求将被拒绝。\n');

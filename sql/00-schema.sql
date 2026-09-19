@@ -58,6 +58,54 @@ CREATE INDEX IF NOT EXISTS memories_synced_idx
   ON public.memories (agent_id, synced);
 
 -- ═══════════════════════════════════════════════════
+-- 管理控制台：admins / admin_sessions / settings
+--
+-- 为什么 admins 不并进 agents：Agent 是「工具」，持 API Key 走 MCP；
+-- 管理员是「人」，持口令登管理面板。混在一张表里只靠 role 区分，
+-- 迟早写出「某个 Agent 的 key 能登管理面板」这类越权。
+-- ═══════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public.admins (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  username        text        NOT NULL UNIQUE,
+  -- scrypt$N$r$p$salt$hash，永不下发前端、永不明文
+  password_hash   text        NOT NULL,
+  role            text        NOT NULL DEFAULT 'admin'
+                                CHECK (role IN ('super', 'admin')),
+  disabled        boolean     NOT NULL DEFAULT false,
+  -- 改口令 / 停用时 +1，旧会话因版本不符立刻作废（无需吊销列表）
+  session_version bigint      NOT NULL DEFAULT 0,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.admin_sessions (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_id        uuid        NOT NULL REFERENCES public.admins(id) ON DELETE CASCADE,
+  -- 存 token 的 sha256，不存原文
+  token_hash      text        NOT NULL UNIQUE,
+  session_version bigint      NOT NULL DEFAULT 0,
+  expires_at      timestamptz NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS admin_sessions_token_idx
+  ON public.admin_sessions (token_hash);
+CREATE INDEX IF NOT EXISTS admin_sessions_admin_idx
+  ON public.admin_sessions (admin_id);
+
+-- 一行一个键。setup_locked 这一行同时充当「已安装」的 CAS 锁。
+CREATE TABLE IF NOT EXISTS public.settings (
+  key         text        PRIMARY KEY,
+  value       text        NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.settings (key, value) VALUES
+  ('instance_name', '墨忆'),
+  ('global_memory', '0'),
+  ('open_register', '1')
+ON CONFLICT (key) DO NOTHING;
+
+-- ═══════════════════════════════════════════════════
 -- 函数
 -- ═══════════════════════════════════════════════════
 
@@ -72,6 +120,9 @@ AS $$
 $$;
 
 -- 向量近邻检索
+-- match_agent_id 传 NULL = 不限定 agent（全局记忆模式）。
+-- 之所以不用「每个 agent 各查一次再合并」：那样一条查询要打 N 次 RPC，
+-- 而且全局排序得在服务层重做，索引也就白用了。
 CREATE OR REPLACE FUNCTION match_memories(
   query_embedding vector(384),
   match_agent_id  uuid,
@@ -80,6 +131,7 @@ CREATE OR REPLACE FUNCTION match_memories(
 )
 RETURNS TABLE (
   id           text,
+  agent_id     uuid,
   content      text,
   summary      text,
   importance   text,
@@ -95,11 +147,11 @@ LANGUAGE sql
 SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
-  SELECT m.id, m.content, m.summary, m.importance, m.tags, m.source,
+  SELECT m.id, m.agent_id, m.content, m.summary, m.importance, m.tags, m.source,
          m.synced, m.access_count, m.created_at, m.updated_at,
          1 - (m.embedding <=> query_embedding) AS similarity
   FROM public.memories m
-  WHERE m.agent_id = match_agent_id
+  WHERE (match_agent_id IS NULL OR m.agent_id = match_agent_id)
     AND m.embedding IS NOT NULL
     AND 1 - (m.embedding <=> query_embedding) > min_similarity
   ORDER BY m.embedding <=> query_embedding

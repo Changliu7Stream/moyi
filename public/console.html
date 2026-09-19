@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>墨忆 · 管理台</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+
+<div class="ink-bloom"></div>
+
+<!-- ① 引导安装：仅在服务端说「还没装」时出现，装完即永久消失 -->
+<section id="setupView" class="auth-view hidden">
+  <div class="auth-card">
+    <div class="brand center"><h1 class="brand-title">墨忆</h1><span class="brand-sub">Setup</span></div>
+    <p class="auth-desc">首次部署：立下第一位掌柜。<br>这一步完成后本页即封存，此后只能凭口令登录。</p>
+
+    <div id="setupBlocked" class="notice hidden"></div>
+
+    <label class="field-label">实例名称</label>
+    <input type="text" id="suName" class="auth-input" placeholder="例如「藏书阁」，留空即「墨忆」" maxlength="40">
+
+    <label class="field-label">管理员用户名</label>
+    <input type="text" id="suUser" class="auth-input" placeholder="2–32 字符" autocomplete="username" maxlength="32">
+
+    <label class="field-label">管理员口令</label>
+    <input type="password" id="suPass" class="auth-input" placeholder="至少 10 个字符" autocomplete="new-password">
+    <p class="field-note" id="pwHint">口令只以 scrypt 哈希入库，服务端无法还原，也无人能通过界面读到它。</p>
+
+    <label class="check-row">
+      <input type="checkbox" id="suOpenReg" checked>
+      <span>允许任何人自助注册 Agent（公共实例）</span>
+    </label>
+    <p class="field-note">关掉后只能由管理台或持掌柜口令者发号，随时可在「设置」里改回。</p>
+
+    <button id="suBtn" class="btn btn-primary block">立下掌柜，完成安装</button>
+    <div id="setupErr" class="auth-err hidden"></div>
+  </div>
+</section>
+
+<!-- ② 登录 -->
+<section id="loginView" class="auth-view hidden">
+  <div class="auth-card">
+    <div class="brand center"><h1 class="brand-title">墨忆</h1><span class="brand-sub">Console</span></div>
+    <p class="auth-desc" id="loginDesc">管理台登录。</p>
+    <input type="text" id="liUser" class="auth-input" placeholder="用户名" autocomplete="username">
+    <input type="password" id="liPass" class="auth-input" placeholder="口令" autocomplete="current-password">
+    <button id="liBtn" class="btn btn-primary block">进入</button>
+    <div id="loginErr" class="auth-err hidden"></div>
+    <p class="foot-link"><a href="/">← 回到 Agent 账本</a></p>
+  </div>
+</section>
+
+<!-- ③ 管理面板 -->
+<section id="panelView" class="app-view hidden">
+  <header class="top-bar">
+    <div class="brand">
+      <h1 class="brand-title">墨忆</h1>
+      <span class="brand-sub">Console</span>
+    </div>
+    <div class="top-right">
+      <span class="agent-name" id="whoami"></span>
+      <a class="btn btn-ghost btn-sm" href="/">Agent 账本</a>
+      <button id="outBtn" class="btn btn-ghost btn-sm">退出</button>
+    </div>
+  </header>
+
+  <div class="c-tabs">
+    <button class="tab-btn active" data-cp="agents">Agent</button>
+    <button class="tab-btn" data-cp="users">管理员</button>
+    <button class="tab-btn" data-cp="sessions">会话</button>
+    <button class="tab-btn" data-cp="settings">设置</button>
+  </div>
+
+  <main class="c-main">
+
+    <!-- Agent -->
+    <section id="cp-agents" class="c-pane">
+      <h2 class="block-title">发号与除名</h2>
+      <p class="field-note">这里建的每个 Agent 都是独立钥匙、独立记忆。MCP 配置可逐份复制去喂不同的工具。</p>
+      <div class="c-form">
+        <input type="text" id="agName" class="auth-input" placeholder="Agent 名称，如 claude-desktop">
+        <button id="agBtn" class="btn btn-primary">创建并取钥</button>
+      </div>
+      <div id="agKey" class="key-result hidden">
+        <p class="key-warn">密钥仅此一次显示，服务端只存哈希。</p>
+        <div class="key-box"><code id="agKeyCode"></code><button class="btn btn-ghost btn-sm" id="agCopy">复制</button></div>
+        <pre class="mcp-cfg" id="agCfg"></pre>
+      </div>
+      <div id="agList" class="c-list"></div>
+    </section>
+
+    <!-- 管理员 -->
+    <section id="cp-users" class="c-pane hidden">
+      <h2 class="block-title">管理员账号</h2>
+      <p class="field-note">管理员管的是 Agent 与实例设置，看不到任何记忆正文。</p>
+      <div id="superWarn" class="notice hidden"></div>
+      <div class="c-form">
+        <input type="text" id="adUser" class="auth-input" placeholder="用户名">
+        <input type="password" id="adPass" class="auth-input" placeholder="口令（≥10 字符）" autocomplete="new-password">
+        <select id="adRole" class="auth-input"><option value="admin">管理员</option><option value="super">超管</option></select>
+        <button id="adBtn" class="btn btn-primary">新建</button>
+      </div>
+      <div id="adList" class="c-list"></div>
+      <h2 class="block-title mt">改自己的口令</h2>
+      <div class="c-form">
+        <input type="password" id="myOld" class="auth-input" placeholder="当前口令" autocomplete="current-password">
+        <input type="password" id="myNew" class="auth-input" placeholder="新口令" autocomplete="new-password">
+        <button id="myPwBtn" class="btn btn-ghost">改口令并踢掉其它设备</button>
+      </div>
+    </section>
+
+    <!-- 会话 -->
+    <section id="cp-sessions" class="c-pane hidden">
+      <h2 class="block-title">在线会话</h2>
+      <p class="field-note">改口令或停用账号会立刻作废该账号的全部会话。</p>
+      <div id="seList" class="c-list"></div>
+    </section>
+
+    <!-- 设置 -->
+    <section id="cp-settings" class="c-pane hidden">
+      <h2 class="block-title">实例设置</h2>
+      <div id="stBody" class="c-settings">
+        <label class="field-label">实例名称</label>
+        <input type="text" id="stName" class="auth-input" maxlength="40">
+
+        <label class="check-row">
+          <input type="checkbox" id="stGlobal">
+          <span>全局记忆</span>
+        </label>
+        <p class="field-note" id="stGlobalNote"></p>
+
+        <label class="check-row">
+          <input type="checkbox" id="stReg">
+          <span>开放自助注册</span>
+        </label>
+        <p class="field-note">关闭后公开注册接口返回 403，只能由管理台发号。</p>
+
+        <button id="stBtn" class="btn btn-primary">保存设置</button>
+        <div id="stErr" class="auth-err hidden"></div>
+      </div>
+      <div id="stLocked" class="notice hidden"></div>
+    </section>
+
+  </main>
+</section>
+
+<script src="/console.js"></script>
+</body>
+</html>

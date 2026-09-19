@@ -1,5 +1,5 @@
 /**
- * 墨忆 v3.2 — 本地开发服务器
+ * 墨忆 v3.3 — 本地开发服务器
  * API 逻辑与 Vercel 版共用 lib/moyi.js
  */
 const http = require('http');
@@ -42,6 +42,8 @@ const TYPES = {
 
 function staticFile(req, res) {
   let fp = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  // /console 是管理台的短地址（真正的 API 在 /api/console/*，两者不冲突）
+  if (fp === '/console' || fp === '/console/') fp = '/console.html';
   // 目录穿越防护：先规范化，再确认仍落在 PUBLIC_DIR 内
   fp = path.normalize(path.join(PUBLIC_DIR, fp));
   if (!fp.startsWith(PUBLIC_DIR + path.sep) && fp !== PUBLIC_DIR) return false;
@@ -78,9 +80,11 @@ server.listen(PORT, HOST, () => {
   if (!process.env.MOYI_DB_TOKEN && !process.env.SUPABASE_KEY && !process.env.SUPABASE_ANON_KEY) {
     missing.push(cloud ? 'SUPABASE_KEY' : 'MOYI_DB_TOKEN');
   }
-  console.log('\n  墨忆 v3.2  Agent Memory Layer');
+  console.log('\n  墨忆 v3.3  Agent Memory Layer');
   console.log('  ────────────────────────────');
   console.log('  服务: http://localhost:' + PORT);
+  console.log('  管理台: http://localhost:' + PORT + '/console'
+    + '（首次访问会进入引导安装，装完即封存）');
   console.log('  存储: ' + (cloud ? 'Supabase（托管）' : 'PostgREST（自托管/兼容协议）'));
   if (missing.length) {
     console.log('  ⚠ 缺少环境变量: ' + missing.join(', '));

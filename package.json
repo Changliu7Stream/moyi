@@ -1,6 +1,6 @@
 {
   "name": "moyi",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "墨忆 — Agent 记忆层：MCP 协议 + pgvector 语义检索与去重 + 衰减遗忘 + 关联图谱，存储可换 Supabase 或自托管 PostgREST，支持 Docker",
   "main": "server.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "docker:down": "docker compose --profile local --profile cloud down"
   },
   "engines": { "node": ">=18" },
-  "keywords": ["mcp", "memory", "ai", "agent", "supabase", "postgrest", "postgresql", "pgvector", "embeddings", "docker", "vercel"],
+  "keywords": ["mcp", "memory", "ai", "agent", "supabase", "postgrest", "postgresql", "pgvector", "embeddings", "docker", "vercel", "admin-console"],
   "author": "画青霜",
   "license": "MIT"
 }

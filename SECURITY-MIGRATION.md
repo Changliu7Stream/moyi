@@ -38,6 +38,39 @@ MOYI_CODE=<你自己的长随机掌柜口令>
 - **错误响应回显 `e.message`**：泄露实现细节，现统一为可读提示 + 服务端日志。
 - **注册接口公开无限速**：现按 IP 滑窗限速，见 README「注册限速与审计日志」。
 
+### 4. 管理台（v3.3 起）的额外前提
+
+管理台带来三张新表：`admins`、`admin_sessions`、`settings`。它们和 `memories` 的安全性质不同：
+
+- `admins.password_hash` 是**可离线暴破的包裹**（scrypt 参数随哈希一起存）。
+  谁能读到这一列，谁就能在自己的机器上慢慢试。因此：
+  - **PostgREST 的地址只能对墨忆服务本身开放。** 自托管栈的角色授权
+    （`docker/init/10-roles.sql`）把 `admins` / `admin_sessions` / `settings` 授给了
+    `web_anon`——因为这一栈不开 RLS、隔离在服务层。这不是疏漏而是那条既定前提的延续：
+    **PostgREST 落到公网 = 管理员口令哈希一起漏出去**，比原来的「全库记忆公开」更糟。
+    要把管理面暴露到不可信网络，请在 `admins` / `admin_sessions` 上自己写策略，
+    或改走下面 Supabase 那份带 RLS 的 SQL。
+- `settings` 里的 `setup_locked` 一行是引导安装的锁。**删掉它等于重新打开安装页**——
+  任何人都能立一个新的管理员。迁移、恢复备份时不要把这一行清掉。
+- Supabase 路线下这三张表建在 `sql/vector-search.sql` 的第 2 步，
+  **开了 RLS 且不建任何面向 anon 的策略**：即 anon key 完全读不到 `admins`。
+  服务端用 service_role key 读写它们，这是唯一预期的通路。
+- 忘记管理员口令时没有远程重置接口，也不该有。恢复办法是直接改库：
+
+  ```sql
+  -- 用新口令重新生成哈希（参数须与库里格式一致：scrypt$N$r$p$salt$hash）
+  -- 最快的路径是本地跑一段 Node：
+  --   node -e "const c=require('./lib/console.js');c.hashPassword('新口令').then(console.log)"
+  UPDATE public.admins
+     SET password_hash = '<上一步输出>',
+         session_version = <当前值 + 1>,
+         disabled = false
+   WHERE username = '你的管理员名';
+  ```
+
+  推高 `session_version` 是为了顺手作废该账号遗留的全部会话。
+  若整个实例连一个可用超管都不剩（例如误删），先手工插一行 `role='super'` 的管理员再登录。
+
 ## 二、升级迁移步骤 —— 顺序很重要
 
 ⚠️ **先换 key，再开 RLS。** 若先开 RLS，仍在用低权限 key 的服务会瞬间全场 401，
@@ -129,5 +162,5 @@ for i in $(seq 12); do curl -s -o /dev/null -w '%{http_code} ' -X POST \
 回归测试不触碰任何真实数据库（跑在内存 mock 上）：
 
 ```bash
-npm test        # 去重判据 10 项 + 集成 126 项
+npm test        # 去重判据 10 项 + 集成 213 项
 ```

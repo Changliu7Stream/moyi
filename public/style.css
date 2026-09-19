@@ -40,6 +40,10 @@ body{font-family:'Noto Serif SC','Source Han Serif SC','Songti SC','SimSun',seri
 .key-box{display:flex;align-items:center;gap:8px;background:var(--paper-2);border:1px solid var(--line);border-radius:2px;padding:10px 12px;margin-bottom:14px;}
 .key-box code{flex:1;font-size:12px;word-break:break-all;color:var(--ink);font-family:'Courier New',monospace;}
 .key-hint{font-size:12px;color:var(--ink-mist);text-align:center;margin-bottom:12px;}
+/* 页脚次要链接：账本指向管理台，管理台指回账本 */
+.foot-link{text-align:center;margin-top:18px;font-size:12px;}
+.foot-link a{color:var(--ink-mist);text-decoration:none;border-bottom:1px solid var(--line);}
+.foot-link a:hover{color:var(--ink);}
 
 /* ── 按钮 ── */
 .btn{padding:8px 18px;border:1px solid var(--line);border-radius:2px;font-size:13px;font-family:inherit;letter-spacing:.1em;cursor:pointer;transition:all .25s;background:transparent;color:var(--ink-fade);}

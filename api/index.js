@@ -1,5 +1,5 @@
 /**
- * 墨忆 v3.2 — Vercel Function 入口
+ * 墨忆 v3.3 — Vercel Function 入口
  * 处理所有 /api/* 请求
  */
 const { route, corsHeaders } = require('../lib/moyi.js');

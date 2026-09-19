@@ -1,0 +1,321 @@
+/**
+ * 墨忆 · 管理台
+ *
+ * 三条实现约束，都是被这里的场景逼出来的，不是风格偏好：
+ *  1. 页面该显示什么由 /console/status 决定，不由本地存的那个标记决定 ——
+ *     引导页是一次性的，服务端说装好了就永远不再出现，防止「清 localStorage
+ *     就能重跑安装器」这类想当然的绕过。
+ *  2. 所有写请求都带 X-Moyi-Console: 1。会话 Cookie 是 SameSite=Strict，
+ *     这一头是第二道闸：跨站表单发不出自定义头，跨站 fetch 又要过 CORS 白名单。
+ *  3. 这里拿不到任何记忆正文。管理台只显示条数 —— 管理员是「管工具的人」，
+ *     不是「读别人日记的人」。想看内容得用那个 Agent 自己的 key。
+ */
+(function () {
+'use strict';
+
+var API = '/api/console';
+var $ = function (id) { return document.getElementById(id); };
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function api(path, method, body) {
+  var opts = { method: method || 'GET', headers: {}, credentials: 'same-origin' };
+  if (method && method !== 'GET') {
+    opts.headers['X-Moyi-Console'] = '1';
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body || {});
+  }
+  return fetch(API + path, opts).then(function (r) {
+    return r.json().catch(function () { return null; }).then(function (d) {
+      if (!r.ok) {
+        var e = new Error((d && (d.error || d.hint)) || '请求失败（' + r.status + '）');
+        e.status = r.status; e.data = d;
+        throw e;
+      }
+      return d;
+    });
+  });
+}
+
+function say(el, msg, isErr) {
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+  if (isErr !== undefined) el.classList.toggle('notice', !isErr);
+}
+
+function show(view) {
+  ['setupView', 'loginView', 'panelView'].forEach(function (v) {
+    $(v).classList.toggle('hidden', v !== view);
+  });
+}
+
+var ME = { role: null, username: null, isSuper: false };
+
+// ── 引导安装：只在服务端确认「未安装」时出现 ──────────
+function bootSetup() {
+  show('setupView');
+  $('suBtn').addEventListener('click', function () {
+    var btn = $('suBtn');
+    btn.disabled = true;
+    say($('setupErr'), '', true);
+    api('/setup', 'POST', {
+      username: $('suUser').value.trim(),
+      password: $('suPass').value,
+      instance_name: $('suName').value.trim(),
+      open_register: $('suOpenReg').checked,
+    }).then(function () {
+      // 装好即进面板；引导页此后再无入口
+      location.reload();
+    }).catch(function (e) {
+      btn.disabled = false;
+      say($('setupErr'), e.message, true);
+    });
+  });
+}
+
+function bootLogin(st) {
+  show('loginView');
+  $('loginDesc').textContent = (st && st.instance_name ? st.instance_name : '墨忆') + ' · 管理台登录';
+  var go = function () {
+    var btn = $('liBtn');
+    btn.disabled = true;
+    say($('loginErr'), '', true);
+    api('/login', 'POST', { username: $('liUser').value.trim(), password: $('liPass').value })
+      .then(function () { location.reload(); })
+      .catch(function (e) { btn.disabled = false; say($('loginErr'), e.message, true); });
+  };
+  $('liBtn').addEventListener('click', go);
+  $('liPass').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') go(); });
+}
+
+// ── 面板 ─────────────────────────────────────────────
+function switchPane(name) {
+  ['agents', 'users', 'sessions', 'settings'].forEach(function (n) {
+    $('cp-' + n).classList.toggle('hidden', n !== name);
+  });
+  document.querySelectorAll('.c-tabs .tab-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-cp') === name);
+  });
+  if (name === 'agents') loadAgents();
+  if (name === 'users') loadAdmins();
+  if (name === 'sessions') loadSessions();
+  if (name === 'settings') loadSettings();
+}
+
+function loadAgents() {
+  api('/agents').then(function (d) {
+    var rows = (d.agents || []).map(function (a) {
+      return '<div class="c-row">'
+        + '<div class="c-row-main"><strong>' + esc(a.name) + '</strong>'
+        + '<span class="c-badge ' + (a.role === 'master' ? 'master' : '') + '">'
+        + (a.role === 'master' ? '掌柜' : 'Agent') + '</span></div>'
+        + '<div class="c-row-meta">' + esc(a.memory_count || 0) + ' 条记忆</div>'
+        + '<div class="c-row-act">'
+        + '<button class="btn btn-ghost btn-sm" data-rot="' + esc(a.id) + '">换钥</button> '
+        + '<button class="btn btn-danger btn-sm" data-del="' + esc(a.id) + '" data-nm="' + esc(a.name) + '">除名</button>'
+        + '</div></div>';
+    }).join('');
+    $('agList').innerHTML = rows || '<p class="field-note">尚无 Agent。</p>';
+    $('agList').querySelectorAll('[data-rot]').forEach(function (b) {
+      b.addEventListener('click', function () { rotateKey(b.getAttribute('data-rot')); });
+    });
+    $('agList').querySelectorAll('[data-del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        delAgent(b.getAttribute('data-del'), b.getAttribute('data-nm'));
+      });
+    });
+  }).catch(function (e) { say($('agList'), e.message); });
+}
+
+function renderKey(d) {
+  $('agKey').classList.remove('hidden');
+  $('agKeyCode').textContent = d.api_key || '';
+  $('agCfg').textContent = d.mcp_config || '';
+}
+
+function rotateKey(id) {
+  if (!confirm('换新钥后旧钥立即失效，正在使用它的工具会连不上。继续？')) return;
+  api('/agents/' + encodeURIComponent(id) + '/reset-key', 'POST', {}).then(renderKey)
+    .catch(function (e) { alert(e.message); });
+}
+
+function delAgent(id, name) {
+  if (!confirm('除名「' + name + '」会连带删除它的记忆，且不可恢复。确认？')) return;
+  api('/agents/' + encodeURIComponent(id), 'DELETE', {}).then(loadAgents)
+    .catch(function (e) { alert(e.message); });
+}
+
+function loadAdmins() {
+  api('/admins').then(function (d) {
+    $('superWarn').classList.add('hidden');
+    var rows = (d.admins || []).map(function (a) {
+      return '<div class="c-row">'
+        + '<div class="c-row-main"><strong>' + esc(a.username) + '</strong>'
+        + '<span class="c-badge">' + (a.role === 'super' ? '超管' : '管理员') + '</span>'
+        + (a.disabled ? '<span class="c-badge off">已停用</span>' : '') + '</div>'
+        + '<div class="c-row-meta">' + esc((a.created_at || '').slice(0, 10)) + '</div>'
+        + '<div class="c-row-act">'
+        + '<button class="btn btn-ghost btn-sm" data-pw="' + esc(a.id) + '">置口令</button> '
+        + '<button class="btn btn-ghost btn-sm" data-dis="' + esc(a.id) + '" data-v="' + (a.disabled ? '0' : '1') + '">'
+        + (a.disabled ? '启用' : '停用') + '</button> '
+        + '<button class="btn btn-danger btn-sm" data-adel="' + esc(a.id) + '" data-nm="' + esc(a.username) + '">删除</button>'
+        + '</div></div>';
+    }).join('');
+    $('adList').innerHTML = rows || '<p class="field-note">读取失败。</p>';
+    bindAdminRows();
+  }).catch(function (e) {
+    // 403 = 我是普通管理员：这页对我本就该是只读且不可见的
+    $('adList').innerHTML = '';
+    say($('superWarn'), e.status === 403 ? '仅超管可查看与增删管理员账号。' : e.message);
+  });
+}
+
+function bindAdminRows() {
+  $('adList').querySelectorAll('[data-dis]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      api('/admins/' + encodeURIComponent(b.getAttribute('data-dis')), 'PATCH',
+        { disabled: b.getAttribute('data-v') === '1' }).then(loadAdmins)
+        .catch(function (e) { alert(e.message); });
+    });
+  });
+  $('adList').querySelectorAll('[data-pw]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var pw = prompt('为该账号设置新口令（≥10 字符）。该账号的既有会话会全部失效。');
+      if (!pw) return;
+      api('/admins/' + encodeURIComponent(b.getAttribute('data-pw')) + '/password', 'POST', { password: pw })
+        .then(function () { alert('已更新。'); }).catch(function (e) { alert(e.message); });
+    });
+  });
+  $('adList').querySelectorAll('[data-adel]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('删除管理员「' + b.getAttribute('data-nm') + '」？')) return;
+      api('/admins/' + encodeURIComponent(b.getAttribute('data-adel')), 'DELETE', {})
+        .then(loadAdmins).catch(function (e) { alert(e.message); });
+    });
+  });
+}
+
+function loadSessions() {
+  api('/sessions').then(function (d) {
+    var rows = (d.sessions || []).map(function (s) {
+      return '<div class="c-row">'
+        + '<div class="c-row-main"><strong>' + esc(s.username) + '</strong>'
+        + (s.current ? '<span class="c-badge">本次</span>' : '') + '</div>'
+        + '<div class="c-row-meta">有效至 ' + esc((s.expires_at || '').slice(0, 16).replace('T', ' ')) + '</div>'
+        + '<div class="c-row-act"><button class="btn btn-danger btn-sm" data-se="'
+        + esc(s.id) + '">撤销</button></div></div>';
+    }).join('');
+    $('seList').innerHTML = rows || '<p class="field-note">无在线会话。</p>';
+    $('seList').querySelectorAll('[data-se]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/sessions/' + encodeURIComponent(b.getAttribute('data-se')), 'DELETE', {}).then(loadSessions)
+          .catch(function (e) { alert(e.message); });
+      });
+    });
+  }).catch(function (e) { say($('seList'), e.message); });
+}
+
+function loadSettings() {
+  api('/settings').then(function (d) {
+    var s = d.settings || {};
+    $('stName').value = s.instance_name || '';
+    $('stGlobal').checked = s.global_memory === '1';
+    $('stReg').checked = s.open_register === '1';
+    $('stGlobalNote').textContent = d.can_manage
+      ? '开启后所有 Agent 互相「只读」可见对方的记忆；写入、去重合并、删除仍各自独立。'
+        + '关掉即恢复彻底隔离。这一改动会立刻影响所有 Agent 的检索结果。'
+      : '仅超管可修改。当前为只读视图。';
+    ['stName', 'stGlobal', 'stReg', 'stBtn'].forEach(function (id) {
+      var el = $(id);
+      if (el.type === 'checkbox') el.disabled = !d.can_manage;
+      else el.readOnly = !d.can_manage && el.tagName === 'INPUT';
+    });
+    $('stBtn').disabled = !d.can_manage;
+    $('stBody').classList.remove('hidden');
+    say($('stLocked'), d.db_ready ? '' : '未找到 settings 表：请先执行迁移 SQL（sql/00-schema.sql 或 sql/vector-search.sql）后重启。', false);
+    $('stLocked').classList.toggle('hidden', !!d.db_ready);
+  }).catch(function (e) { say($('stLocked'), e.message, true); });
+}
+
+function enterPanel() {
+  show('panelView');
+  $('whoami').textContent = ME.username + (ME.isSuper ? ' · 超管' : ' · 管理员');
+  if (!ME.isSuper) {
+    document.querySelectorAll('.c-tabs .tab-btn').forEach(function (b) {
+      if (b.getAttribute('data-cp') === 'users') b.classList.add('hidden');
+    });
+  }
+  switchPane('agents');
+}
+
+// ── 事件绑定 ─────────────────────────────────────────
+function wirePanel() {
+  document.querySelectorAll('.c-tabs .tab-btn').forEach(function (b) {
+    b.addEventListener('click', function () { switchPane(b.getAttribute('data-cp')); });
+  });
+  $('agBtn').addEventListener('click', function () {
+    var n = $('agName').value.trim();
+    if (!n) { alert('先给 Agent 起个名字'); return; }
+    api('/agents', 'POST', { name: n }).then(function (d) {
+      $('agName').value = '';
+      renderKey(d); loadAgents();
+    }).catch(function (e) { alert(e.message); });
+  });
+  $('agCopy').addEventListener('click', function () {
+    var t = $('agKeyCode').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(t);
+    else { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  });
+  $('adBtn').addEventListener('click', function () {
+    api('/admins', 'POST', {
+      username: $('adUser').value.trim(), password: $('adPass').value, role: $('adRole').value,
+    }).then(function () {
+      $('adUser').value = ''; $('adPass').value = ''; loadAdmins();
+    }).catch(function (e) { alert(e.message); });
+  });
+  $('myPwBtn').addEventListener('click', function () {
+    api('/me/password', 'POST', { current_password: $('myOld').value, password: $('myNew').value })
+      .then(function (d) { $('myOld').value = ''; $('myNew').value = ''; alert(d.note || '已更新'); })
+      .catch(function (e) { alert(e.message); });
+  });
+  $('stBtn').addEventListener('click', function () {
+    api('/settings', 'PATCH', {
+      instance_name: $('stName').value.trim() || '墨忆',
+      global_memory: $('stGlobal').checked ? '1' : '0',
+      open_register: $('stReg').checked ? '1' : '0',
+    }).then(function () { say($('stErr'), ''); loadSettings(); })
+      .catch(function (e) { say($('stErr'), e.message, true); });
+  });
+  $('outBtn').addEventListener('click', function () {
+    api('/logout', 'POST', {}).then(function () { location.reload(); })
+      .catch(function () { location.reload(); });
+  });
+}
+
+// ── 启动：一切由服务端状态决定 ───────────────────────
+api('/status').then(function (st) {
+  if (st.needs_setup) return bootSetup();
+  if (st.authenticated) {
+    ME.username = st.username; ME.role = st.role; ME.isSuper = st.role === 'super';
+    wirePanel();
+    return enterPanel();
+  }
+  if (!st.db_ready) {
+    show('loginView');
+    say($('loginErr'), '数据库尚未初始化：请先执行迁移 SQL（见 README「快速开始」）。', true);
+    $('liBtn').disabled = true;
+    return;
+  }
+  bootLogin(st);
+}).catch(function () {
+  show('loginView');
+  say($('loginErr'), '无法连接服务：确认后端已启动。', true);
+});
+
+})();
