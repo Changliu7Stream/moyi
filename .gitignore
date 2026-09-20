@@ -10,3 +10,4 @@ moyi.env
 .env
 .env.local
 .env.*.local
+.vercel
