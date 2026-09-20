@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>三条部署路径 · 墨忆文档</title>
+<meta name="description" content="Supabase / 自托管全栈 / Vercel Serverless 三种部署路径的细节差异：SQL 怎么选、compose profile 为什么互斥、Vercel 上限速退化的真实原因。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">部署 / Deploy</p>
+<h1>三条部署路径</h1>
+<p class="lede">墨忆只认识 PostgREST 协议，所以「数据库在哪」这件事可以换。三条路径的代码是同一份，差异全在 SQL 怎么跑、凭据从哪来、进程模型是长驻还是无状态。</p>
+
+<h2 id="supabase">连外部 Supabase</h2>
+
+<h3>跑哪个 SQL：全新库要跑两份，顺序不能反</h3>
+<div class="box stop">
+<p class="box-t">只跑 vector-search.sql 会留下半套数据库</p>
+<p>全新项目里 <code>agents</code> / <code>memories</code> 两张表还不存在，而 <code>sql/vector-search.sql</code> 第一件事就是给它们开 RLS。空库单跑该文件的实测结果：所有触及这两张表的语句全部报 <code>ERROR: relation "public.agents" does not exist</code>（第 18、19、29、33、105、109、112、122、160 行），<b>但</b> <code>admins</code> / <code>admin_sessions</code> / <code>settings</code> 三张表照建、RLS 照开——SQL 编辑器是逐句执行的，不会因为前面报错就停下。于是你得到一个<b>看起来跑完了</b>的库：控制台能用、能装能登录，而 <code>embedding</code> 列、HNSW 索引、<code>match_memories</code> 与 <code>increment_access</code> 两个 RPC 全都不存在，向量检索与访问计数静默降级或失效。这比干净地失败更难查。</p>
+<p>该文件<b>不建</b> <code>agents</code> / <code>memories</code>，这点它自己的头注释写得很明白——它是给表已存在的旧版墨忆做升级用的。</p>
+</div>
+<p>正确顺序，SQL Editor 里按次粘贴执行：</p>
+<pre><code>sql/00-schema.sql        <span class="c">-- 1. 建全部五张表 + pgvector 扩展 + HNSW 索引</span>
+sql/vector-search.sql    <span class="c">-- 2. 开 RLS、补控制台相关表、建两个 RPC</span></code></pre>
+<p>分工是这样：<code>00-schema.sql</code> 建 <code>agents</code> / <code>memories</code> / <code>admins</code> / <code>admin_sessions</code> / <code>settings</code> 五张表并装扩展；<code>vector-search.sql</code> 负责给五张表开 RLS、建 <code>match_memories</code> 与 <code>increment_access</code> 两个 RPC。后者对前者的产物只补不建，所以顺序反了会失败，跑对了则<b>幂等</b>——重复执行只出 NOTICE，不报错。老库升级（表已在）可以只跑第二份。</p>
+
+<h3>为什么这个 SQL 开 RLS</h3>
+<p>Supabase 项目天然是多租户的：anon key 会随前端代码分发，任何拿到它的人都能直连 PostgREST。如果不开 RLS，anon key 等于全库读写权限——墨忆的 agent 隔离会被完全绕过。<code>sql/vector-search.sql</code> 因此对所有表 <code>ENABLE ROW LEVEL SECURITY</code>，且<b>不建任何面向 anon 的策略</b>，默认全拒。只有 service_role key 通过显式 policy 被放行。</p>
+
+<div class="box stop">
+<p class="box-t">service_role key 绝不能进浏览器</p>
+<p>这个 key 绕过 RLS 的一切检查。它只能出现在服务端环境变量里（<code>SUPABASE_KEY</code> 或 <code>MOYI_DB_TOKEN</code>），不能写进前端代码、不能写进 MCP 客户端配置、不能打进 Docker 镜像层。一旦泄露，立刻去 Supabase 后台 Settings → API → Rotate。</p>
+</div>
+
+<h3>凭据怎么给墨忆</h3>
+<p>三个环境变量：</p>
+<div class="env-grid">
+<div class="env-card"><h5>SUPABASE_URL <span class="badge req">必填</span></h5><p class="meta">别名 <code>MOYI_DB_URL</code>（优先）</p><div class="body"><p>项目地址，形如 <code>https://xxxx.supabase.co</code>。服务层据此自动补 <code>/rest/v1</code> 前缀。</p></div></div>
+<div class="env-card"><h5>SUPABASE_KEY <span class="badge req">必填</span></h5><p class="meta">别名 <code>MOYI_DB_TOKEN</code>（优先）/ <code>SUPABASE_ANON_KEY</code></p><div class="body"><p>必须是 <b>service_role key</b>。anon key 会让每条读静默返回 0 行。</p></div></div>
+<div class="env-card"><h5>MOYI_CODE <span class="badge opt">建议</span></h5><p class="meta">别名 <code>MASTER_CODE</code></p><div class="body"><p>注册 master 的口令。不设则无人能成为 master（安全默认）。</p></div></div>
+</div>
+
+<p>Docker 路径下把这三项写进 <code>data/moyi-env/moyi.env</code>，<code>docker compose --profile cloud up -d --build</code> 即起。裸 Node 路径下写进 <code>.env.local</code>，<code>node server.js</code> 即起。</p>
+
+<h2 id="selfhost">自托管全栈</h2>
+
+<h3>compose 的两个 profile 为什么互斥</h3>
+<p><code>docker-compose.yml</code> 定义了两个 profile：<code>cloud</code> 只起墨忆一个容器连外部 Supabase，<code>local</code> 起 Postgres + PostgREST + 墨忆三个容器。两个 profile 下的墨忆服务都要占宿主机的 3906 端口（<code>MOYI_HOST_PORT</code> 默认值），同时开会直接端口冲突——compose 会报错，<b>这是有意的</b>，响失败比静默二选一安全。</p>
+
+<h3><code>data/moyi-env/</code> 只读挂载的作用</h3>
+<p>compose 里 <code>./data/moyi-env:/data/moyi-env:ro</code> 把凭据目录以只读方式挂进容器。入口脚本 <code>docker-entrypoint.sh</code> 遍历目录下所有 <code>*.env</code> 与 <code>moyi.env</code>，逐行解析后 <code>export</code>——不用 <code>eval</code> 不用 <code>source</code>，文件名和值里的 shell 元字符不会被执行。只读挂载保证容器内进程无法篡改凭据文件，这是容器化部署的安全底线。</p>
+<p>容器本身也以非 root 用户 <code>moyi</code> 运行、根文件系统 <code>read_only: true</code>、<code>no-new-privileges:true</code>、只给 <code>/tmp</code> 开了 tmpfs。server.js 全程只 <code>readFileSync</code> 不写盘，所以锁根文件系统不会出问题。</p>
+
+<h3>为什么只精确挂载两个 SQL 文件</h3>
+<p>compose 里 postgres 容器的 volumes 长这样：</p>
+<pre><code>volumes:
+  - pgdata:/var/lib/postgresql/data
+  - ./sql/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+  - ./docker/init/10-roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro</code></pre>
+<p>注释里那个警告不是小题大做：<code>docker-entrypoint-initdb.d</code> 会执行目录下<b>所有</b> <code>.sql</code>。如果你把 <code>./sql</code> 整个目录挂进去，<code>sql/vector-search.sql</code> 也会被执行——而那个文件是 Supabase 专用的，它开 RLS 且默认拒绝 anon。自托管栈的 PostgREST 以 <code>web_anon</code> 身份运行，一旦 RLS 开启而没有面向 <code>web_anon</code> 的策略，<b>每条读都返回 0 行，且不报错</b>。表现是「所有记忆凭空消失」，而不是 401 或 500。</p>
+
+<div class="box warn">
+<p class="box-t">「每条读都 0 行且不报错」的坑</p>
+<p>自托管栈刻意不开 RLS——隔离在服务层，PostgREST 只有一个 <code>web_anon</code> 角色，权限由 <code>docker/init/10-roles.sql</code> 的 GRANT 收紧。Supabase 栈刻意开 RLS——因为 anon key 会泄露，必须在数据库侧兜住。两套 SQL 的 RLS 策略<b>相反</b>，混用必出事。所以 compose 只精确挂载两个文件，不挂目录。</p>
+</div>
+
+<h3>PostgREST 为什么只绑 127.0.0.1</h3>
+<p><code>docker-compose.yml</code> 里 PostgREST 端口映射是 <code>127.0.0.1:3001:3000</code>。自托管栈不开 RLS，PostgREST 没有 agent 隔离概念——它落到公网等于全库公开，包括 <code>admins.password_hash</code>（scrypt 哈希，可离线暴破）。所以 PostgREST 只监听 loopback，由墨忆容器通过 Docker 内网 <code>http://postgrest:3000</code> 访问。要把管理面暴露到不可信网络，请在 <code>admins</code> / <code>admin_sessions</code> 上自己写 RLS 策略，或启用 <code>PGRST_JWT_SECRET</code> 并用 <code>node scripts/gen-jwt.js</code> 签发 JWT 作为 <code>MOYI_DB_TOKEN</code>。</p>
+
+<h2 id="vercel">Vercel Serverless</h2>
+
+<h3>入口与路由</h3>
+<p><code>api/index.js</code> 是 Vercel Function 入口，薄壳——require <code>lib/moyi.js</code> 的 <code>route()</code> 函数，把 Vercel 的 <code>req</code>/<code>res</code> 透传进去。<code>vercel.json</code> 两条 rewrite：</p>
+<pre><code>{ "source": "/api/(.*)", "destination": "/api/index" }
+{ "source": "/console", "destination": "/console.html" }</code></pre>
+<p>所有 <code>/api/*</code> 请求都打到同一个 Function，<code>route()</code> 内部根据路径分发。<code>/console</code> 指向静态 HTML，管理台前端是纯 HTML/CSS/JS，不需要服务端渲染。</p>
+
+<h3>管理台为什么在无状态平台上仍可用</h3>
+<p>会话（<code>admin_sessions</code> 表）和设置（<code>settings</code> 表）都存在数据库里，不依赖进程状态。Vercel Function 冷启动时从数据库读会话哈希、比对版本号，与长驻进程走的是同一套逻辑。所以引导安装、登录、改设置、管 Agent 在 Vercel 上都能用。</p>
+
+<h3>限速与审计的退化</h3>
+<p>限速计数器（<code>lib/audit.js</code> 的 <code>windows</code> Map）和审计日志（同文件的 <code>events</code> 环形缓冲）都在<b>进程内存</b>里。Vercel 会起多个 Function 实例、随时回收，每个实例各自计数。后果：</p>
+<ul>
+<li><code>MOYI_REGISTER_PER_HOUR</code>（默认 10）和 <code>MOYI_AUTH_FAIL_PER_15MIN</code>（Agent 侧，默认 30）在单实例上有效，多实例下攻击者分散请求就能绕过。</li>
+<li><code>MOYI_ADMIN_FAIL_PER_15MIN</code>（管理台口令，默认 10）同理——无状态平台上的暴破拦截只是部分防线。</li>
+<li>审计日志在实例回收时丢失，不能作为合规留痕。</li>
+</ul>
+<p>要可靠的限速，请放反向代理（见 <a href="https.html">HTTPS 与反向代理</a>）或用 Docker 长驻进程那条路。</p>
+
+<h3>环境变量怎么配</h3>
+<p>Vercel 面板 → Settings → Environment Variables，配以下三项（Production + Preview 都勾上）：</p>
+<div class="env-grid">
+<div class="env-card"><h5>MOYI_DB_URL 或 SUPABASE_URL <span class="badge req">必填</span></h5><div class="body"><p>Supabase 项目地址。Vercel 部署一般走 Supabase 路线。</p></div></div>
+<div class="env-card"><h5>MOYI_DB_TOKEN 或 SUPABASE_KEY <span class="badge req">必填</span></h5><div class="body"><p>service_role key。</p></div></div>
+<div class="env-card"><h5>MOYI_CODE <span class="badge opt">建议</span></h5><div class="body"><p>master 注册口令。</p></div></div>
+</div>
+<p>可选：<code>MOYI_EMBED_URL</code> / <code>MOYI_EMBED_KEY</code> 接 embedding provider，<code>MOYI_ALLOWED_ORIGINS</code> 配 CORS 白名单。</p>
+
+<h2 id="choose">选择建议</h2>
+<p>三条路线没有绝对的好坏，只有适不适合。几个典型场景：</p>
+<ul>
+<li><b>个人开发者，想快速跑起来试试</b>：Supabase 路线。五分钟能注册项目、跑 SQL、起容器，不用管数据库备份和升级。限速在单实例下够用。</li>
+<li><b>小团队内部用，数据敏感</b>：自托管路线。数据完全在自己手里，Postgres 可以做定期备份、审计日志可以接外部系统。运维成本高一些，但可控。</li>
+<li><b>Demo 或低频个人用</b>：Vercel 路线。零运维，自动 HTTPS，但限速和审计在多实例下基本失效。如果你的 Agent 一天只调几十次 API，问题不大。</li>
+<li><b>生产环境，多用户</b>：自托管或 Supabase + 反向代理。Vercel 的限速退化在这种场景下是真实的安全风险——攻击者可以分散请求绕过每实例的计数。</li>
+</ul>
+<p>一个常见的误区是「先用 Vercel 跑起来，以后迁移到自托管」。迁移本身不难（环境变量改一下就行），但<a href="troubleshoot.html#needs-embedding">向量回填</a>和<a href="troubleshoot.html#search-scan">检索后端切换</a>需要手工操作，不是无缝的。如果一开始就知道要上生产，直接选自托管或 Supabase 路线更省事。</p>
+
+<h2 id="compare">三种路径对比</h2>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Supabase（Docker / 裸 Node）</th><th>自托管全栈</th><th>Vercel Serverless</th></tr></thead>
+<tbody>
+<tr><td><b>数据掌控</b></td><td>托管在 Supabase，可随时导出</td><td>完全在自己手里</td><td>仍依赖 Supabase（或兼容后端）</td></tr>
+<tr><td><b>运维成本</b></td><td>低——不管数据库</td><td>高——自己备份、升级、监控</td><td>最低——免运维</td></tr>
+<tr><td><b>限速是否有效</b></td><td>有效（单长驻进程）</td><td>有效（单长驻进程）</td><td><b>每实例独立</b>，多实例下可绕过</td></tr>
+<tr><td><b>审计是否可用</b></td><td>进程内存，重启即失</td><td>进程内存，重启即失</td><td>同左，且实例回收更频繁</td></tr>
+<tr><td><b>是否需要自己搞 HTTPS</b></td><td>是——裸 Node 或 Docker 都需要反代</td><td>是</td><td>否——Vercel 自带</td></tr>
+<tr><td><b>管理台可用？</b></td><td>可用（会话在库里）</td><td>可用</td><td>可用</td></tr>
+<tr><td><b>适合场景</b></td><td>个人 / 小团队，想快速上线</td><td>对数据主权有要求</td><td>个人低频用、Demo</td></tr>
+</tbody>
+</table>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

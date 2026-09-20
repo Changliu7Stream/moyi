@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>故障排查 · 墨忆文档</title>
+<meta name="description" content="按症状查原因：启动横幅警告、API 全 500、db_ready:false、引导安装 409、忘记口令、429 限速、search_backend 为 scan、向量回填、管理台保存无反应、端口占用、Docker 信号、RLS 挂错 SQL。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">运维 / Troubleshoot</p>
+<h1>故障排查</h1>
+<p class="lede">按「症状 → 为什么 → 怎么办」组织。每条都有代码或文档依据，不是猜测。</p>
+
+<h2 id="banner">启动横幅出现「⚠ 缺少环境变量」/「ⓘ 未设置 MOYI_CODE」</h2>
+<p><b>⚠ 缺少环境变量</b>：server.js 启动自检发现 <code>MOYI_DB_URL</code>（或 <code>SUPABASE_URL</code>）和 <code>MOYI_DB_TOKEN</code>（或 <code>SUPABASE_KEY</code>）至少一组没填。后果是所有 API 调用返回 500，因为服务层拿不到后端地址或凭据。解决：检查 <code>.env.local</code>（裸 Node）或 <code>data/moyi-env/moyi.env</code>（Docker）里这几项是否拼写正确、文件是否被正确加载。</p>
+<p><b>ⓘ 未设置 MOYI_CODE</b>：这不是错误，是信息提示。不设 <code>MOYI_CODE</code> 意味着任何人都无法通过注册接口成为 master（安全默认）。如果你需要 master 角色，设一个长随机串；如果只用管理台发号，不设也行。</p>
+
+<h2 id="all-500">所有 API 都返回 500</h2>
+<p>三个可能原因，按概率排序：</p>
+<ol>
+<li><b>环境变量没填</b>——启动横幅会明确说缺哪项。解决后重启。</li>
+<li><b>数据库连不上</b>——<code>MOYI_DB_URL</code> 拼错、Supabase 项目暂停、自托管栈里 PostgREST 容器没起来。用 <code>curl $MOYI_DB_URL/</code> 直接测一下后端是否可达。</li>
+<li><b>迁移 SQL 没跑</b>——表不存在时 PostgREST 返回 404，服务层把它当故障处理。去跑对应的 SQL（两条路都要 <code>sql/00-schema.sql</code> 建表；Supabase 再补 <code>sql/vector-search.sql</code>，自托管再补 <code>docker/init/10-roles.sql</code>）。</li>
+</ol>
+
+<h2 id="db-ready-false"><code>/status</code> 里 <code>db_ready:false</code>、<code>needs_setup:false</code> 但库里确实没管理员</h2>
+<p><code>db_ready</code> 为 false 意味着 <code>admins</code> 表或 <code>settings</code> 表至少有一个不存在（PostgREST 返回 404）。<code>needs_setup</code> 为 false 是因为代码里显式判断了 <code>!tableMissing &amp;&amp; !settingsMissing</code>——表缺失时不算「待安装」，否则用户会在没跑迁移 SQL 的情况下看到一个能提交、但必然失败的引导页。</p>
+<p>解决：跑迁移 SQL。Supabase 在 SQL Editor 里<b>依次</b>执行 <code>sql/00-schema.sql</code> 与 <code>sql/vector-search.sql</code>（只跑后者会留下半套库，见 <a href="deploy.html#supabase">部署详解</a>）；自托管 <code>psql -d moyi -f sql/00-schema.sql &amp;&amp; psql -d moyi -f docker/init/10-roles.sql</code>。</p>
+
+<h2 id="setup-409">引导安装页返回 409「本实例已完成安装」</h2>
+<p>两种情况：</p>
+<ol>
+<li><b>确实已经安装过了</b>——<code>admins</code> 表里有行，或 <code>settings</code> 表里有 <code>setup_locked</code> 行。这是正常行为，用管理员账号登录即可。</li>
+<li><b>你想重置安装</b>——删 Cookie 没用，因为判定在服务端。删 <code>settings</code> 表里的 <code>setup_locked</code> 行可以重开安装入口，但<b>这等于重新打开安装页</b>，任何人都能立一个新管理员（见 SECURITY-MIGRATION.md）。正确的重置方式是：如果忘了口令，走下面的手工恢复流程，而不是删锁。</li>
+</ol>
+
+<div class="box stop">
+<p class="box-t">删 setup_locked 的风险</p>
+<p>这一行是引导安装的写锁。删掉它 = 重开安装入口。在公网可达的实例上，这意味着任何人在你删锁到重新安装之间的窗口里，都能建一个自己的超管账号。除非你明确知道自己在做什么，否则不要删。</p>
+</div>
+
+<h2 id="forgot-password">忘记管理员口令</h2>
+<p>没有远程重置接口，也不该有。恢复办法是直接改库：</p>
+<pre><code><span class="c"># 1. 用新口令生成哈希（参数须与库里格式一致）</span>
+node -e "const c=require('./lib/console.js');c.hashPassword('新口令').then(console.log)"
+<span class="c"># 输出形如 scrypt$16384$8$1$&lt;salt_b64&gt;$&lt;hash_b64&gt;</span>
+
+<span class="c"># 2. 更新数据库</span>
+UPDATE public.admins
+   SET password_hash = '&lt;上一步输出&gt;',
+       session_version = &lt;当前值 + 1&gt;,
+       disabled = false
+ WHERE username = '你的管理员名';</code></pre>
+<p>推高 <code>session_version</code> 是为了顺手作废该账号遗留的全部会话——<code>sessionAlive()</code> 比对版本号，不一致即失效。如果不 +1，旧设备上的浏览器还保持着登录态。</p>
+<p>如果整个实例连一个可用超管都不剩（误删或停用），先手工插一行 <code>role='super'</code> 的管理员再登录。</p>
+
+<h2 id="rate-limit">注册返回 429 / 管理台登录返回 429</h2>
+<p>这是两套独立的计数器：</p>
+<div class="tw">
+<table>
+<thead><tr><th>计数器</th><th>键前缀</th><th>默认限额</th><th>环境变量</th></tr></thead>
+<tbody>
+<tr><td>注册（每小时）</td><td><code>reg:h:</code></td><td>10 次/来源/小时</td><td><code>MOYI_REGISTER_PER_HOUR</code></td></tr>
+<tr><td>注册（每天）</td><td><code>reg:d:</code></td><td>30 次/来源/天</td><td><code>MOYI_REGISTER_PER_DAY</code></td></tr>
+<tr><td>Agent 认证失败</td><td><code>auth:</code></td><td>30 次/来源/15 分钟</td><td><code>MOYI_AUTH_FAIL_PER_15MIN</code></td></tr>
+<tr><td>管理台口令失败</td><td><code>adminauth:</code></td><td>10 次/来源/15 分钟</td><td><code>MOYI_ADMIN_FAIL_PER_15MIN</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>「来源」由 <code>X-Forwarded-For</code> 第一跳或 <code>socket.remoteAddress</code> 的 sha256 前 16 位决定。反代不传 XFF 时所有用户共享一个桶（见 <a href="https.html#xff">HTTPS 与反向代理</a>）。</p>
+<p>批量注册场景不要撞注册限速，改用 master 签发：<code>POST /api/agents</code>（带 master 的 <code>X-Moyi-Key</code>），不走注册限速。</p>
+
+<h2 id="search-scan">检索结果里 <code>search_backend</code> 是 <code>scan</code> 而不是 <code>pgvector</code></h2>
+<p>三个条件必须同时满足才会走 <code>pgvector</code>：</p>
+<ol>
+<li><code>MOYI_DB_SEARCH=1</code>——默认是 <code>0</code>，必须显式开启。</li>
+<li><code>match_memories</code> RPC 必须存在——迁移 SQL 跑过才会建。</li>
+<li>RPC 没被熔断——<code>rpcUnavailable</code> 是进程级变量，一旦 RPC 返回 404 或 400 就置位，后续请求不再尝试，直接回退 <code>scan</code>。重启进程才能重置。</li>
+</ol>
+<p>自查：<code>curl /api/memories/search</code> 的响应里看 <code>search_backend</code> 字段。如果是 <code>scan</code>，先确认环境变量，再确认 RPC 存在（<code>curl $MOYI_DB_URL/rpc/match_memories</code> 应该返回 401 而不是 404），然后重启墨忆进程清掉熔断标记。</p>
+
+<h2 id="needs-embedding">记忆没有向量 / <code>needs_embedding</code> 不为 0</h2>
+<p>历史记忆在接入 embedding provider 之前存的，<code>embedding</code> 列为 null。回填接口：<code>POST /api/admin/backfill-embeddings</code>（master 权限）。响应里 <code>remaining</code> 为 0 即回填完成。</p>
+<p><b>换 provider 必须全量回填</b>：不同模型的向量不在同一空间。旧模型生成的向量与新模型生成的向量混在一起，余弦相似度没有意义，语义排序会失效。回填时加 <code>{"overwrite": true}</code> 覆盖已有向量。</p>
+<p>覆盖率查询：<code>GET /api/embeddings/status</code>，看 <code>vectorized</code> / <code>missing</code> / <code>total</code>。</p>
+
+<h2 id="settings-noop">管理台能打开但保存设置没反应</h2>
+<p>三个可能原因：</p>
+<ol>
+<li><b>缺少 <code>X-Moyi-Console: 1</code> 头</b>——所有管理台写操作都要求这个头（防 CSRF）。如果你用 curl 或自定义客户端调 <code>PATCH /api/console/settings</code>，必须带这个头，否则返回 403。</li>
+<li><b>不是超管</b>——<code>PATCH /api/console/settings</code> 要求 <code>role='super'</code>。普通管理员只能 GET 读设置，写操作返回 403。</li>
+<li><b>多实例延迟</b>——设置缓存在进程内存里，TTL 由 <code>MOYI_SETTINGS_TTL_MS</code> 控制（默认 5000ms）。Vercel 等多实例部署下，写入后其他实例最多 5 秒后才看到新值。同进程内的写入会立即失效缓存。</li>
+</ol>
+
+<h2 id="eaddrinuse">端口被占、EADDRINUSE</h2>
+<p>启动时报 <code>Error: listen EADDRINUSE :::3906</code>，说明 3906 端口已被占用。先查谁在听：</p>
+<pre><code>ss -tlnp | grep 3906
+<span class="c"># 或</span>
+lsof -i :3906</code></pre>
+<p>常见原因：上一个墨忆进程没退干净、Docker 容器映射了同端口、其他服务占了 3906。杀掉占用进程，或用 <code>MOYI_PORT=3907</code> 换端口。</p>
+
+<h2 id="docker-signal">Docker 容器收不到停止信号</h2>
+<p><code>docker stop</code> 超时 10 秒后 SIGKILL 强杀，说明容器没在 10 秒内优雅退出。原因通常是 entrypoint 脚本没用 <code>exec</code> 替换进程——如果入口脚本 fork 出 node 子进程，SIGTERM 发给脚本（PID 1），脚本不转发给子进程，node 收不到信号。</p>
+<p>墨忆的 <code>docker-entrypoint.sh</code> 最后一行是 <code>exec node server.js</code>，用 <code>exec</code> 替换了 shell 进程，让 node 成为 PID 1，直接收 SIGTERM。如果你改过 entrypoint 或用了自定义启动脚本，确保最后一行是 <code>exec</code> 开头。</p>
+
+<h2 id="rls-wrong-sql">自托管栈「每条读都 0 行且不报错」</h2>
+<p>这是 <a href="deploy.html#selfhost">部署详解</a> 里那个坑的实际表现。原因：自托管栈的 PostgREST 以 <code>web_anon</code> 身份运行，而 <code>sql/vector-search.sql</code>（Supabase 专用）开了 RLS 且不建面向 anon 的策略。一旦这个 SQL 被错误执行，<code>web_anon</code> 的每条读都被 RLS 拒绝，返回空数组——服务层把空数组当成「没有记忆」，不报错。</p>
+<p>解决：</p>
+<ol>
+<li>确认你跑的是 <code>sql/00-schema.sql</code> + <code>docker/init/10-roles.sql</code>，不是 <code>sql/vector-search.sql</code>。</li>
+<li>如果已经跑错了，关 RLS：<code>ALTER TABLE public.memories DISABLE ROW LEVEL SECURITY;</code>（五张表都要关），或者删库重建（<code>docker compose down -v</code> 删数据卷，重新 <code>up</code>）。</li>
+</ol>
+
+<hr>
+
+<h2 id="commands">自查命令</h2>
+<p>以下命令可直接复制，把 <code>&lt;host&gt;</code> 换成你的域名或 <code>localhost:3906</code>。</p>
+
+<pre><code><span class="c"># 1. 服务是否活着</span>
+curl -s http://&lt;host&gt;/api/console/status | python3 -m json.tool
+
+<span class="c"># 2. 带 Key 验证身份</span>
+curl -s http://&lt;host&gt;/api/whoami \
+  -H "X-Moyi-Key: moyi_xxxxxxxxxxxxxxxx" | python3 -m json.tool
+
+<span class="c"># 3. 看监听端口</span>
+ss -tlnp | grep 3906
+
+<span class="c"># 4. 看容器日志</span>
+docker compose logs --tail=50 moyi-local
+<span class="c"># 或</span>
+docker logs --tail=50 &lt;容器名或ID&gt;
+
+<span class="c"># 5. 直接测 PostgREST 是否可达（自托管栈）</span>
+curl -s http://127.0.0.1:3001/ | head -c 200
+
+<span class="c"># 6. 看向量覆盖率</span>
+curl -s http://&lt;host&gt;/api/embeddings/status \
+  -H "X-Moyi-Key: moyi_xxxxxxxxxxxxxxxx" | python3 -m json.tool</code></pre>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

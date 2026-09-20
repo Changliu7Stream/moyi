@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HTTPS 与反向代理 · 墨忆文档</title>
+<meta name="description" content="X-Forwarded-Proto 决定 Cookie 是否加 Secure、X-Forwarded-For 决定限速 key 来源、MOYI_ALLOWED_ORIGINS 与 CSRF 的关系，以及 Nginx / Caddy 可直接抄的配置。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">部署 / HTTPS</p>
+<h1>HTTPS 与反向代理</h1>
+<p class="lede">墨忆的代码行为真的依赖请求头。这一页把每个头怎么影响逻辑讲清楚，然后给两份可直接抄的反代配置。</p>
+
+<h2 id="proto">X-Forwarded-Proto 与 Cookie Secure</h2>
+
+<h3>代码里的判定</h3>
+<p><code>lib/console.js:146-151</code> 的 <code>sessionCookie()</code> 函数：</p>
+<pre><code>const proto = String((req &amp;&amp; req.headers &amp;&amp; req.headers['x-forwarded-proto']) || '')
+  .split(',')[0].trim();
+const secure = proto === 'https' ? '; Secure' : '';</code></pre>
+<p>它取 <code>X-Forwarded-Proto</code> 头的<b>第一个逗号段</b>，trim 后严格等于 <code>'https'</code> 才加 <code>Secure</code> 标志。为什么取第一段：这个头可能被多级代理追加成 <code>https, http</code>（客户端到第一跳是 HTTPS、第一跳到第二跳是 HTTP），取第一段拿到的是客户端实际用的协议。</p>
+
+<h3>后果</h3>
+<p>如果反代不传这个头，或者传了但值不对（比如 <code>http</code>），服务端发出的 <code>Set-Cookie</code> 就<b>不带 Secure</b>。这意味着：</p>
+<ul>
+<li>浏览器会通过 HTTP 明文链路发送会话 Cookie。</li>
+<li>同一网络里的任何人都能嗅探到 <code>moyi_session</code> 的值，直接拿来调 <code>/api/console/*</code> 接口。</li>
+<li>即使你的反代强制 HTTPS，只要没传 <code>X-Forwarded-Proto: https</code>，Cookie 依然没 Secure——浏览器不知道后面那层是加密的。</li>
+</ul>
+
+<h3>怎么自查</h3>
+<p>打开浏览器 DevTools → Application → Cookies，看 <code>moyi_session</code> 那一行的 <code>Secure</code> 列。如果是空的，说明服务端没加。或者 Network 面板里找登录响应，看 <code>Set-Cookie</code> 头里有没有 <code>; Secure</code>。</p>
+
+<div class="box warn">
+<p class="box-t">修复方法</p>
+<p>在反代配置里加 <code>proxy_set_header X-Forwarded-Proto $scheme;</code>（Nginx）或确认 Caddy 自动透传（Caddy 默认会加）。不要写死 <code>https</code>——如果反代自身监听 HTTP（比如内网），写死会让所有 Cookie 都带 Secure，而浏览器在 HTTP 页面上会<b>拒绝发送 Secure Cookie</b>，结果是谁都登不进去。</p>
+</div>
+
+<h2 id="xff">X-Forwarded-For 与限速 key</h2>
+
+<h3>代码里的判定</h3>
+<p><code>lib/audit.js:125-131</code> 的 <code>clientKey()</code> 函数：</p>
+<pre><code>const xff = req.headers['x-forwarded-for'];
+const ip = (typeof xff === 'string' ? xff.split(',')[0].trim() : '')
+  || (req.socket &amp;&amp; req.socket.remoteAddress) || 'unknown';
+return crypto.createHash('sha256').update(String(ip)).digest('hex').slice(0, 16);</code></pre>
+<p>限速 key 的来源：优先 <code>X-Forwarded-For</code> 的第一跳 IP，退回 <code>req.socket.remoteAddress</code>，再退回字符串 <code>'unknown'</code>。sha256 后取前 16 位十六进制作为匿名化标识。</p>
+
+<h3>代理不传 XFF 时所有用户共享一个限速桶</h3>
+<p>如果反代不透传 <code>X-Forwarded-For</code>，所有请求到达墨忆时 <code>req.socket.remoteAddress</code> 都是反代的内网地址（比如 <code>172.17.0.1</code>）。所有用户的限速 key 都一样——一个人触发注册限速，其他人也注册不了；一个人试错口令 10 次，所有管理员都被锁 15 分钟。</p>
+<p>反过来，如果反代正确传 XFF，每个客户端的限速桶是独立的。</p>
+
+<h2 id="origins">MOYI_ALLOWED_ORIGINS 与 CSRF</h2>
+
+<h3>代码里的判定</h3>
+<p><code>lib/moyi.js:575-585</code> 的 <code>allowedOrigin()</code> 函数：</p>
+<pre><code>const list = (process.env.MOYI_ALLOWED_ORIGINS || '').split(',').map(s =&gt; s.trim()).filter(Boolean);
+const origin = req.headers.origin;
+if (!origin) return null;
+if (list.includes('*')) return '*';
+const allow = new Set(list);
+allow.add('http://localhost:3906');
+allow.add('http://127.0.0.1:3906');
+return allow.has(origin) ? origin : null;</code></pre>
+<p>默认行为：没有请求带 <code>Origin</code> 头时不返回 CORS 头（<code>return null</code>）。带了的，只有 <code>MOYI_ALLOWED_ORIGINS</code> 白名单里的、以及两个 localhost 地址被放行。其余一律不返回 <code>Access-Control-Allow-Origin</code>，浏览器会拦。</p>
+
+<h3>设成 <code>*</code> 的 CSRF 后果</h3>
+<p>如果 <code>MOYI_ALLOWED_ORIGINS=*</code>，任何网页都能以当前浏览器的身份调墨忆 API。墨忆有两道 CSRF 防护：Cookie <code>SameSite=Strict</code> 和写操作另需 <code>X-Moyi-Console: 1</code> 头。前者在同站跳转时仍然会带 Cookie（<code>Strict</code> 不防同源攻击），后者跨站 fetch 发不出自定义头——但 <code>SameSite=Strict</code> 在用户从<b>同站</b>的恶意页面点链接时不起作用。CORS <code>*</code> 把最后一道门拆了。</p>
+<p>生产环境应该显式列出前端域名，比如 <code>MOYI_ALLOWED_ORIGINS=https://moyi.example.com</code>。</p>
+
+<h2 id="nginx">Nginx 配置</h2>
+<pre><code>server {
+    listen 80;
+    server_name moyi.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name moyi.example.com;
+
+    ssl_certificate     /etc/lets/live/moyi.example.com/fullchain.pem;
+    ssl_certificate_key /etc/lets/live/moyi.example.com/privkey.pem;
+
+    # HSTS：一年，含子域，允许预加载
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+    # 只转发墨忆端口，绝不转发 PostgREST
+    location / {
+        proxy_pass http://127.0.0.1:3906;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        proxy_read_timeout 60s;
+    }
+}</code></pre>
+<p>要点：</p>
+<ul>
+<li>HTTP 80 端口 301 跳到 HTTPS。</li>
+<li><code>X-Forwarded-Proto $scheme</code>——<code>$scheme</code> 是当前监听的协议，443 段里就是 <code>https</code>。</li>
+<li><code>X-Forwarded-For $proxy_add_x_forwarded_for</code>——追加客户端真实 IP。</li>
+<li><b>绝不转发 PostgREST 的 3001 端口</b>。自托管栈的 PostgREST 只绑 127.0.0.1，如果你在这里加一个 <code>location /pg/</code> 转发到 3001，等于把全库（含管理员口令哈希）公开到互联网。</li>
+</ul>
+
+<h2 id="caddy">Caddy 配置</h2>
+<pre><code>moyi.example.com {
+    reverse_proxy localhost:3906 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}</code></pre>
+<p>Caddy 自动申请和续签 Let's Encrypt 证书、自动强制 HTTPS、自动加 HSTS。它默认会透传 <code>X-Forwarded-For</code> 和 <code>X-Forwarded-Proto</code>，上面显式写一遍是为了确保不被上游覆盖。</p>
+<p>同样不要给 PostgREST 加 <code>reverse_proxy</code> 段。</p>
+
+<h2 id="read-only">反向代理与 read_only 容器</h2>
+<p>compose 里墨忆容器设了 <code>read_only: true</code>，根文件系统只读。这不影响反向代理——反代连的是容器的 3906 TCP 端口，与文件系统无关。</p>
+<p>相关的环境变量：</p>
+<div class="env-grid">
+<div class="env-card"><h5>MOYI_HOST</h5><div class="body"><p>绑定地址，默认 <code>0.0.0.0</code>。容器内一般不用改。</p></div></div>
+<div class="env-card"><h5>MOYI_PORT</h5><div class="body"><p>容器内监听端口，默认 <code>3906</code>。Dockerfile 里 <code>EXPOSE 3906</code>，改了这里要同步改 compose 的端口映射。</p></div></div>
+<div class="env-card"><h5>MOYI_HOST_PORT</h5><div class="body"><p>宿主机映射端口，默认 <code>3906</code>。反代 <code>proxy_pass</code> 指向这个端口。</p></div></div>
+</div>
+<p>三者关系：<code>MOYI_HOST:MOYI_PORT</code> 是容器内监听地址，<code>MOYI_HOST_PORT</code> 是宿主机端口，反代连宿主机端口。</p>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

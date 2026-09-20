@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>接口清单 · 墨忆文档</title>
+<meta name="description" content="墨忆全部 HTTP 接口：Agent 面 /api/*（X-Moyi-Key）与控制台面 /api/console/*（会话 Cookie），含认证方式、参数、响应字段、全部状态码与触发条件。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">参考 / API Reference</p>
+<h1>接口清单</h1>
+<p class="lede">墨忆对外暴露两组接口，<b>认证面完全分开、互不通用</b>。Agent 面走 <code>X-Moyi-Key</code>，控制台面走会话 Cookie。管理员 Cookie 打 Agent 接口回 401，Agent Key 打控制台接口也回 401——这不是 bug，是刻意的隔离。</p>
+
+<h2 id="two-faces">两套认证面</h2>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Agent 面</th><th>控制台面</th></tr></thead>
+<tbody>
+<tr><td><b>路径前缀</b></td><td><code>/api/*</code>（除 <code>/api/console/*</code>）</td><td><code>/api/console/*</code></td></tr>
+<tr><td><b>凭据</b></td><td><code>X-Moyi-Key: moyi_xxx</code> 或 <code>Authorization: Bearer moyi_xxx</code></td><td>用户名+口令 → 会话 Cookie（<code>moyi_session</code>）</td></tr>
+<tr><td><b>密钥/口令存储</b></td><td>API Key 的 sha256</td><td>scrypt 哈希（自描述格式）</td></tr>
+<tr><td><b>谁在用</b></td><td>Agent 程序、MCP 客户端</td><td>人，在浏览器里</td></tr>
+<tr><td><b>能读记忆正文？</b></td><td>只能读自己那套（全局模式下可读他人）</td><td><b>读不到任何记忆正文</b></td></tr>
+<tr><td><b>跨面生效？</b></td><td colspan="2">不能。管理员 Cookie 打 <code>/api/memories</code> 回 401，Agent Key 打 <code>/api/console/me</code> 也回 401</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box stop">
+<p class="box-t">为什么不让一套凭据通吃</p>
+<p>如果把 Agent Key 和管理员 Cookie 塞进同一个前缀，迟早出现「拿 Agent key 命中管理端点」的越权。分开以后，<b>认证方式由路径唯一决定</b>，读代码的人不用往下翻三屏才知道某个端点靠什么鉴权。（<code>lib/moyi.js:619-631</code>）</p>
+</div>
+
+<h2 id="agent-api">Agent 接口（/api/*）</h2>
+<p>以下所有接口（除注册与验证外）均要求有效的 <code>X-Moyi-Key</code>。认证失败统一回 <code>{error}</code>，不带 key 与带错 key 都回 401，但只有<b>带了 key 且错了</b>才计入限速。</p>
+
+<h3 id="reg-verify">注册与验证</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/agents/register</code></td><td>无（公开）</td><td><code>name</code>（必填，≤64 字符）、<code>master_code</code>（可选，匹配 <code>MOYI_CODE</code> 则成 master）</td><td><code>{id, name, role, api_key, created_at, note}</code></td><td>201 成功；400 name 非法；403 注册关闭；429 限速</td><td><code>lib/moyi.js:1099-1141</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/agents/verify</code></td><td>X-Moyi-Key</td><td>无（读头）</td><td>agent 对象 <code>{id, name, role, created_at}</code></td><td>200 成功；401 密钥无效；429 认证失败限速</td><td><code>lib/moyi.js:1144-1153</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>注册是公开接口（领钥匙的唯一入口），不能关掉，只能限速。但实例可以<b>关掉自助注册</b>（<code>open_register=0</code>），此时只有带对 <code>master_code</code> 的请求才能进来——否则等于把管理员自己锁在门外。（<code>lib/moyi.js:1114-1130</code>）</p>
+
+<h3 id="agent-mgmt">Agent 管理（master only）</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/agents</code></td><td>X-Moyi-Key + master</td><td>无</td><td><code>{agents, total}</code>（含 <code>memory_count</code>）</td><td>200；401 未认证；403 非 master；429 限速</td><td><code>lib/moyi.js:1177-1188</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/agents</code></td><td>X-Moyi-Key + master</td><td><code>name</code>（必填）、<code>role</code>（可选，<code>master</code> 或 <code>agent</code>）</td><td><code>{id, name, role, api_key, note}</code></td><td>201；400 name 为空；403 非 master</td><td><code>lib/moyi.js:1189-1199</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/agents/:id</code></td><td>X-Moyi-Key + master</td><td><code>:id</code> UUID，不能是自己</td><td><code>{deleted, id}</code></td><td>200；400 id 非法或自删；403 非 master</td><td><code>lib/moyi.js:1200-1212</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/agents/:id/reset-key</code></td><td>X-Moyi-Key + master</td><td><code>:id</code> UUID</td><td><code>{id, name, api_key, note}</code></td><td>200；400 id 非法；403 非 master；404 不存在</td><td><code>lib/moyi.js:1213-1223</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="mem-crud">记忆 CRUD</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/memories</code></td><td>X-Moyi-Key</td><td>query: <code>importance</code>、<code>synced</code>、<code>q</code>（语义检索）、<code>limit</code> [1,500]</td><td><code>{memories, total, scope}</code></td><td>200；401；429</td><td><code>lib/moyi.js:1226-1246</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/memories</code></td><td>X-Moyi-Key</td><td><code>content</code>（必填，≤20000）、<code>importance?</code>、<code>tags?</code>、<code>summary?</code>、<code>source?</code></td><td>记忆对象</td><td>201；400；401</td><td><code>lib/moyi.js:1248-1263</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/memories/:id</code></td><td>X-Moyi-Key</td><td><code>:id</code> 格式合法</td><td>记忆对象（自动 <code>bumpAccess</code>）</td><td>200；400；401；403 只读（全局模式他人）；404</td><td><code>lib/moyi.js:1485-1497</code></td></tr>
+<tr><td><span class="badge patch">PATCH</span></td><td><code>/api/memories/:id</code></td><td>X-Moyi-Key</td><td><code>content?</code>、<code>summary?</code>、<code>importance?</code>、<code>tags?</code>、<code>synced?</code></td><td>更新后的记忆对象</td><td>200；400；401；403；404；502</td><td><code>lib/moyi.js:1510-1534</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/memories/:id</code></td><td>X-Moyi-Key</td><td><code>:id</code> 格式合法</td><td><code>{deleted, id}</code></td><td>200；400；401；403；404；502</td><td><code>lib/moyi.js:1535-1542</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="remember">/memories/remember（去重一步完成）</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/memories/remember</code></td><td>X-Moyi-Key</td><td><code>content</code>（必填）、<code>source?</code>、<code>force?</code></td><td><code>{stored, memory?, deduped?, similarity?, lexical?, reason?}</code></td><td>200（stored=false 或 deduped）；201（stored=true）；400；401</td><td><code>lib/moyi.js:1266-1320</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>评估重要性 → 语义去重 → 存储一步完成。<code>importance=low</code> 且未传 <code>force=true</code> 时不存储，回 <code>{stored:false, reason}</code>。去重命中时回 <code>{deduped:true, similarity, lexical, memory}</code>。</p>
+
+<h3 id="search">检索</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/memories/search</code></td><td>X-Moyi-Key</td><td><code>query</code>（必填）、<code>limit?</code> [1,100]</td><td><code>{results, total, scanned, vectorized, mode, search_backend, decay, scope, embedding}</code></td><td>200；401</td><td><code>lib/moyi.js:1322-1330</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/memories/assess</code></td><td>X-Moyi-Key</td><td><code>content</code>（必填）</td><td><code>{importance, tags, summary}</code></td><td>200；400；401</td><td><code>lib/moyi.js:1406-1412</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="graph">图谱</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/graph</code></td><td>X-Moyi-Key</td><td>query: <code>limit</code> [10,600]、<code>min_weight</code> [0,1]、<code>focus</code></td><td><code>{nodes, edges, stats}</code> 或 <code>{focus, nodes, edges, hops}</code></td><td>200；401</td><td><code>lib/moyi.js:1333-1348</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="decay">衰减</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/decay/preview</code></td><td>X-Moyi-Key</td><td>无</td><td><code>{half_life_days, forget_after_days, scanned, pinned, keep, would_downgrade, would_forget, note}</code></td><td>200；401</td><td><code>lib/moyi.js:1351-1366</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/decay/apply</code></td><td>X-Moyi-Key</td><td><code>confirm</code>（必填 <code>true</code>）</td><td><code>{applied, downgraded, failed, forget_eligible, note}</code></td><td>200；401</td><td><code>lib/moyi.js:1368-1393</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>衰减<b>永远只看自己的记忆</b>（用 <code>OWN_SCOPE</code>），全局记忆改变的是「能读到谁」，不是「能动谁」。让 A 降级 B 的记忆属于越权写。（<code>lib/moyi.js:202</code>）</p>
+
+<h3 id="sync-stats">同步与统计</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/sync/batch</code></td><td>X-Moyi-Key</td><td>无</td><td><code>{synced, ids}</code></td><td>200；401</td><td><code>lib/moyi.js:1433-1439</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/memories/:id/sync</code></td><td>X-Moyi-Key</td><td><code>:id</code></td><td>更新后的记忆对象</td><td>200；400；401；403；404</td><td><code>lib/moyi.js:1545-1559</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/stats</code></td><td>X-Moyi-Key</td><td>无</td><td><code>{total, high, medium, low, synced, unsynced, vectorized, needs_embedding, allTags, agent, embedding}</code></td><td>200；401</td><td><code>lib/moyi.js:1414-1431</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/whoami</code></td><td>X-Moyi-Key</td><td>无</td><td>agent 对象</td><td>200；401</td><td><code>lib/moyi.js:1441-1443</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="embeddings">向量与审计</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/embeddings/status</code></td><td>X-Moyi-Key</td><td>无</td><td><code>{total, vectorized, missing, dim, provider, endpoint, mode, last_error, cached}</code></td><td>200；401</td><td><code>lib/moyi.js:1446-1455</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/admin/backfill-embeddings</code></td><td>X-Moyi-Key + master</td><td><code>overwrite?</code>、<code>agent_id?</code></td><td><code>{scanned, updated, failed, remaining}</code></td><td>200；400；401；403</td><td><code>lib/moyi.js:1457-1478</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/admin/audit</code></td><td>X-Moyi-Key + master</td><td>query: <code>limit</code> [1,2000]</td><td><code>{events, stats, warning}</code></td><td>200；401；403</td><td><code>lib/moyi.js:1396-1404</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="console-api">控制台接口（/api/console/*）</h2>
+<p>控制台是另一套认证面：Agent 用 API Key，管理员用<b>口令 + 会话 Cookie</b>。所有写操作（POST/PATCH/DELETE）额外要求 <code>X-Moyi-Console: 1</code> 头，缺则回 403。</p>
+
+<h3 id="console-public">公开接口</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>超管</th><th>X-Moyi-Console</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/status</code></td><td>无</td><td>否</td><td>否</td><td>无</td><td><code>{needs_setup, has_admins, db_ready, instance_name, open_register, global_memory, authenticated, role, username, setup_locked}</code></td><td>200</td><td><code>lib/moyi.js:668-689</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/setup</code></td><td>无</td><td>否</td><td><b>是</b></td><td><code>username</code>（2-32 字符）、<code>password</code>（10-512）、<code>instance_name?</code>、<code>open_register?</code></td><td><code>{ok, username, role}</code> + Set-Cookie</td><td>201；400；409 已安装或表缺失</td><td><code>lib/moyi.js:692-756</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/login</code></td><td>无</td><td>否</td><td><b>是</b></td><td><code>username</code>、<code>password</code></td><td><code>{ok, username, role}</code> + Set-Cookie</td><td>200；400；401；403 停用；409 表缺失；429 限速</td><td><code>lib/moyi.js:759-790</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/logout</code></td><td>会话</td><td>否</td><td><b>是</b></td><td>无</td><td><code>{ok}</code> + Set-Cookie（清空）</td><td>200</td><td><code>lib/moyi.js:794-801</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="console-auth">需认证接口</h3>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>超管</th><th>X-Moyi-Console</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/me</code></td><td>会话</td><td>否</td><td>否</td><td>无</td><td><code>{id, username, role, is_super}</code></td><td>200；401</td><td><code>lib/moyi.js:804-807</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/me/password</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>current_password</code>、<code>password</code></td><td><code>{ok, note}</code> + Set-Cookie</td><td>200；400；401；404</td><td><code>lib/moyi.js:810-832</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/settings</code></td><td>会话</td><td>否</td><td>否</td><td>无</td><td><code>{settings, can_manage, db_ready}</code></td><td>200；401</td><td><code>lib/moyi.js:835-837</code></td></tr>
+<tr><td><span class="badge patch">PATCH</span></td><td><code>/api/console/settings</code></td><td>会话</td><td><b>是</b></td><td><b>是</b></td><td><code>instance_name?</code>、<code>global_memory?</code>、<code>open_register?</code></td><td><code>{ok, settings}</code></td><td>200；400；401；403</td><td><code>lib/moyi.js:838-862</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/admins</code></td><td>会话</td><td><b>是</b></td><td>否</td><td>无</td><td><code>{admins, total}</code></td><td>200；401；403</td><td><code>lib/moyi.js:865-869</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/admins</code></td><td>会话</td><td><b>是</b></td><td><b>是</b></td><td><code>username</code>、<code>password</code>、<code>role?</code></td><td><code>{id, username, role}</code></td><td>201；400；401；403；409</td><td><code>lib/moyi.js:870-886</code></td></tr>
+<tr><td><span class="badge patch">PATCH</span></td><td><code>/api/console/admins/:id</code></td><td>会话</td><td><b>是</b></td><td><b>是</b></td><td><code>disabled?</code>、<code>role?</code></td><td><code>{ok, admin}</code></td><td>200；400；401；403；404</td><td><code>lib/moyi.js:887-916</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/admins/:id/password</code></td><td>会话</td><td><b>是</b></td><td><b>是</b></td><td><code>password</code></td><td><code>{ok, note}</code></td><td>200；400；401；403；404</td><td><code>lib/moyi.js:917-931</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/console/admins/:id</code></td><td>会话</td><td><b>是</b></td><td><b>是</b></td><td><code>:id</code> UUID，不能是自己</td><td><code>{deleted, id}</code></td><td>200；400；401；403；404</td><td><code>lib/moyi.js:932-952</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/sessions</code></td><td>会话</td><td>否</td><td>否</td><td>无</td><td><code>{sessions, total}</code>（含 <code>current</code> 标记）</td><td>200；401</td><td><code>lib/moyi.js:955-968</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/console/sessions/:id</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{revoked}</code></td><td>200；400；401；403 非自己且非超管</td><td><code>lib/moyi.js:969-982</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/agents</code></td><td>会话</td><td>否</td><td>否</td><td>无</td><td><code>{agents, total, global_memory}</code></td><td>200；401</td><td><code>lib/moyi.js:985-992</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/agents</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>name</code>（≤64）</td><td><code>{id, name, role, api_key, note, mcp_config}</code></td><td>201；400；401</td><td><code>lib/moyi.js:993-1012</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/agents/:id/reset-key</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{id, name, api_key, note, mcp_config}</code></td><td>200；400；401；404</td><td><code>lib/moyi.js:1013-1023</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/console/agents/:id</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{deleted, id}</code></td><td>200；400；401</td><td><code>lib/moyi.js:1024-1033</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="set-cookie">Set-Cookie 属性</h3>
+<p>登录、安装、改口令成功后，响应带 <code>Set-Cookie</code>。确切属性串（<code>lib/console.js:146-151</code>）：</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
+<ul>
+<li><code>HttpOnly</code>：JS 读不到，防 XSS 偷 token</li>
+<li><code>SameSite=Strict</code>：跨站请求不带 Cookie，防 CSRF 第一层</li>
+<li><code>Secure</code>：仅当 <code>X-Forwarded-Proto: https</code> 时追加（<code>lib/console.js:147-148</code>），详见<a href="https.html">HTTPS 与反向代理</a></li>
+<li><code>Max-Age</code>：默认 <code>MOYI_SESSION_DAYS</code>（7 天），上限 30 天（<code>lib/console.js:95-98</code>）</li>
+</ul>
+
+<h2 id="error-shape">错误响应形状</h2>
+<p>所有错误回统一的 <code>{error, hint?}</code> 结构：</p>
+<pre><code>{
+  "error": "密钥无效",
+  "hint": "..."      // 可选，给排查方向
+}</code></pre>
+<p><b>429 限速</b>额外带 <code>retry_after_ms</code>：</p>
+<pre><code>{
+  "error": "密钥校验失败次数过多，请 15 分钟后再试",
+  "retry_after_ms": 892341
+}</code></pre>
+
+<h3 id="403-404">403 vs 404 的不对称</h3>
+<p>全局记忆模式下，PATCH/DELETE 他人的记忆回 <b>403</b>（存在但你不能动）；严格模式下回 <b>404</b>（不存在）。</p>
+<p>这个不对称是刻意的：严格模式下做一次「无归属探测」会把状态码变成<b>跨 agent 的存在性探针</b>——攻击者猜一个 id，403 表示存在、404 表示不存在，等于白嫖一次跨域查询。全局模式下调用方本来就看得见这条记忆（读放宽），所以回 403 更诚实。（<code>lib/moyi.js:1498-1509</code>）</p>
+
+<h2 id="curl">curl 示例</h2>
+<h3>注册 Agent</h3>
+<pre><code>curl -X POST https://moyi.example.com/api/agents/register \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "青霜掌柜"}'</code></pre>
+<p>响应 <code>201</code>，<code>api_key</code> 字段只这一次可见。</p>
+
+<h3>remember（去重一步完成）</h3>
+<pre><code>curl -X POST https://moyi.example.com/api/memories/remember \
+  -H 'X-Moyi-Key: moyi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' \
+  -H 'Content-Type: application/json' \
+  -d '{"content": "我喜欢在雨天写代码", "source": "claude-desktop"}'</code></pre>
+
+<h3>语义检索</h3>
+<pre><code>curl -X POST https://moyi.example.com/api/memories/search \
+  -H 'X-Moyi-Key: moyi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "编程偏好", "limit": 10}'</code></pre>
+
+<h3>控制台登录 + 带 Cookie 调用</h3>
+<pre><code># 登录，拿 Cookie
+curl -X POST https://moyi.example.com/api/console/login \
+  -H 'X-Moyi-Console: 1' \
+  -H 'Content-Type: application/json' \
+  -c cookies.txt \
+  -d '{"username": "admin", "password": "your-password"}'
+
+# 带 Cookie 调管理接口
+curl https://moyi.example.com/api/console/me \
+  -b cookies.txt
+
+# 写操作另需 X-Moyi-Console 头
+curl -X POST https://moyi.example.com/api/console/agents \
+  -H 'X-Moyi-Console: 1' \
+  -H 'Content-Type: application/json' \
+  -b cookies.txt \
+  -d '{"name": "新 Agent"}'</code></pre>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

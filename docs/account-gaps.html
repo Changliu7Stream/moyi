@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>对照：网站账号体系 · 墨忆文档</title>
+<meta name="description" content="拿一套 PC/H5 网站的账号注册登录需求清单（注册、登录、找回密码、信息修改、注销、登录日志、第三方登录、验证码、IP 封禁）逐项对照墨忆现有的账号体系：哪些已经以另一种形式做了，哪些是刻意不做，哪些是真没有。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">底层 / Account Gaps</p>
+<h1>对照：网站账号体系</h1>
+<p class="lede">这一页来自一份典型的需求清单：<b>适配 PC/H5 网站、可直接运行、无安全漏洞、符合网站合规要求的账号注册登录功能完整方案</b>——注册、密码+验证码登录、忘记密码、信息修改、注销、登录日志、第三方登录，外加 bcrypt、5 次失败锁 30 分钟、IP 超频拉黑、HTTPS 强制、Secure+HttpOnly Cookie、CORS 只放行自己、脱敏存储、SQL 注入/XSS/CSRF 防护。</p>
+<p>墨忆<b>不是</b>网站用户系统，它有两套完全不同的身份面，先钉住这个前提：</p>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Agent 面（机器）</th><th>管理面（人）</th></tr></thead>
+<tbody>
+<tr><td><b>入口</b></td><td><code>POST /api/agents/register</code> 领 Key</td><td>浏览器 <code>/console.html</code> 登口令</td></tr>
+<tr><td><b>凭据</b></td><td><code>X-Moyi-Key: moyi_xxx</code>（长期有效）</td><td>用户名+口令 → 短期会话 Cookie</td></tr>
+<tr><td><b>对应清单里的</b></td><td>「注册发号」这一半</td><td>「账号登录」这一整半</td></tr>
+<tr><td><b>有个人身份信息？</b></td><td>只有 name（≤64 字）</td><td>只有 username（2–32 字）</td></tr>
+</tbody>
+</table>
+</div>
+<p>所以下面的对照全部针对<b>管理面</b>。清单里那些「手机号、邮箱、图形验证码、第三方授权登录」的条目，在墨忆里没有对应物——不是因为漏了，而是因为它压根不采集这些信息。</p>
+
+<h2>一、怎么读这一页</h2>
+<p>每个条目打一个标签：</p>
+<div class="tw">
+<table>
+<thead><tr><th>标签</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">已有</span></td><td>清单要的东西墨忆有，实现方式可能和清单写的不一样</td></tr>
+<tr><td><span class="badge patch">换了做法</span></td><td>目标一致，机制或数值不同；差异会写清楚为什么</td></tr>
+<tr><td><span class="badge opt">刻意不做</span></td><td>能做但主动不做，理由比实现更重要</td></tr>
+<tr><td><span class="badge del">真没有</span></td><td>缺，而且做这行的人应该知道它缺</td></tr>
+</tbody>
+</table>
+</div>
+<p>三条贯穿全文的设计前提，理解了它们，大部分取舍就自解释了：</p>
+<div class="cards">
+<div class="card"><b>零依赖</b><span>整仓库没有一个 npm 生产依赖。bcrypt、邮件 SDK、短信 SDK、OAuth 库、验证码服务全部进不来。</span></div>
+<div class="card"><b>只信任反代</b><span>墨忆只听 HTTP，TLS、真实 IP、协议判定全交给反向代理。凡是「网络层该管的」它不管。</span></div>
+<div class="card"><b>无状态优先</b><span>要能在 Vercel 这类实例随时回收的环境跑。所以落盘的留痕、内存态的计数器都会诚实标注边界。</span></div>
+</div>
+
+<h2>二、账号生命周期对照</h2>
+<p>清单里七个环节，逐个对上：</p>
+<div class="tw">
+<table>
+<thead><tr><th>清单要求</th><th>状态</th><th>墨忆现状</th></tr></thead>
+<tbody>
+<tr><td><b>注册</b></td><td><span class="badge opt">刻意不做</span></td><td>管理员<b>不能自助注册</b>。账号只有两个来源：引导安装页建的第一位超管，和超管在 <code>POST /api/console/admins</code> 手工创建（<code>lib/moyi.js:870</code>）。一个能公开注册的后台账号系统，等于把「谁来管这台机器」交给互联网。清单里的「注册」在墨忆侧另有对应物——Agent 公开注册 <code>/api/agents/register</code>，它有 IP 限速、也可以整体关掉，见第四节。</td></tr>
+<tr><td><b>密码登录</b></td><td><span class="badge post">已有</span></td><td><code>POST /api/console/login</code>（<code>lib/moyi.js:759</code>）。用户名不存在与口令错误回<b>同一句话同一状态码</b>（401「用户名或密码不正确」），挡住用户名枚举。</td></tr>
+<tr><td><b>验证码登录</b></td><td><span class="badge del">真没有</span></td><td>没有短信/邮箱验证码登录通道，也没有图形验证码。见第七节的补法。</td></tr>
+<tr><td><b>忘记密码</b></td><td><span class="badge opt">刻意不做</span></td><td>没有自助找回。忘了口令只有两条路：另一位超管 <code>POST /api/console/admins/:id/password</code> 重置，或进数据库手工改（<a href="console.html#recovery">管理台</a> 那页有完整命令）。理由：任何「能远程改掉管理员口令」的接口本身就是这个系统最大的攻击面。</td></tr>
+<tr><td><b>信息修改</b></td><td><span class="badge patch">换了做法</span></td><td>能改的只有 <code>disabled</code> 与 <code>role</code>，且<b>仅超管</b>（<code>PATCH /api/console/admins/:id</code>，<code>lib/moyi.js:907</code>）；本人能改的只有自己的口令（<code>POST /me/password</code>，需带当前口令）。没有昵称、头像、邮箱、手机号可改——库里就没这些列。</td></tr>
+<tr><td><b>注销</b></td><td><span class="badge patch">换了做法</span></td><td>硬删除：<code>DELETE /api/console/admins/:id</code>，仅超管、不能删自己、必须至少留一个可用超管（<code>lib/moyi.js:933</code>），会话一并清掉。清单通常要求的「用户自助注销 + 软删除 + 冷静期 + 留存期匿名化」没有。</td></tr>
+<tr><td><b>登录日志</b></td><td><span class="badge del">真没有</span></td><td>有事件、但不成日志：<code>console.login / login_failed / login_disabled / logout / password_changed / session_revoked / admin_*</code> 全都写进<b>进程内存的环形缓冲</b>，重启即失，且不记 IP 和 UA。详见第五节。</td></tr>
+<tr><td><b>第三方登录</b></td><td><span class="badge del">真没有</span></td><td>只有用户名+口令。没有 OAuth/OIDC 接入点，也没有可扩展的 provider 抽象——加一个就等于引入一个外部依赖链。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>三、数据库对照</h2>
+<p>清单的「数据库设计」模块通常长这样，和墨忆实际的 <code>sql/00-schema.sql</code> 逐列比：</p>
+<div class="tw">
+<table>
+<thead><tr><th>典型字段</th><th>墨忆</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>用户 ID</td><td><span class="badge post">有</span></td><td><code>admins.id uuid PRIMARY KEY DEFAULT gen_random_uuid()</code></td></tr>
+<tr><td>用户名</td><td><span class="badge post">有</span></td><td><code>username text NOT NULL UNIQUE</code></td></tr>
+<tr><td>口令哈希</td><td><span class="badge post">有</span></td><td><code>password_hash</code>，格式 <code>scrypt$N$r$p$salt$hash</code>，参数随哈希一起存（换参数不必重算全库）</td></tr>
+<tr><td>角色 / 权限</td><td><span class="badge post">有</span></td><td><code>role CHECK (role IN ('super','admin'))</code>，两档够用</td></tr>
+<tr><td>启用状态</td><td><span class="badge post">有</span></td><td><code>disabled boolean</code>，停用即踢全部会话</td></tr>
+<tr><td>会话吊销版本</td><td><span class="badge post">有</span></td><td><code>session_version bigint</code>——这是清单里通常没有、但「改密码全端下线」必须依赖的一列</td></tr>
+<tr><td>注册时间</td><td><span class="badge post">有</span></td><td><code>created_at</code></td></tr>
+<tr><td>邮箱 / 手机号</td><td><span class="badge del">无</span></td><td>不采集。<b>连带后果：清单里的「敏感信息脱敏存储」在墨忆没有适用对象</b>——唯一的个人信息就是一个用户名，而它必须以原样存才能登录时比对。</td></tr>
+<tr><td>最后登录时间 / IP</td><td><span class="badge del">无</span></td><td>没有这一列，也没有地方写。要做「异常登录提醒」先得有它</td></tr>
+<tr><td>软删除 / 注销时间</td><td><span class="badge del">无</span></td><td>删除就是 <code>DELETE</code>；<code>admin_sessions</code> 靠 <code>ON DELETE CASCADE</code> 一起走</td></tr>
+<tr><td>验证码 / 找回 token 表</td><td><span class="badge del">无</span></td><td>没有自助找回，自然没有承载一次性 token 的表</td></tr>
+<tr><td>登录历史表</td><td><span class="badge del">无</span></td><td>会话表只存<b>当前有效</b>的会话，用过即废的会被顺手删掉（<code>lib/moyi.js:234-237</code>），它不是历史表</td></tr>
+<tr><td>IP 黑名单表</td><td><span class="badge del">无</span></td><td>限速是内存滑动窗口，重启清零；持久封禁归反代/防火墙</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">为什么 admins 不并进 agents</p>
+<p>Agent 是「工具」，持 API Key 走 MCP；管理员是「人」，持口令登面板。混在一张表里只靠 role 区分，迟早写出「某个 Agent 的 key 能登管理面板」这类越权。这条注释就在 <code>sql/00-schema.sql:63</code> 上方——如果清单的实现者把两种身份塞进一张 <code>users</code> 表，那是同一类漏洞的入口。</p>
+</div>
+
+<h2>四、后端对照</h2>
+
+<h3>先看另一套：Agent 面的注册与换钥</h3>
+<p>清单里「注册 → 发凭据 → 换凭据 → 注销」这条链，在墨忆的 <b>Agent 面</b>其实有完整对应物，而且它是唯一允许公开注册的那一面：</p>
+<div class="tw">
+<table>
+<thead><tr><th>环节</th><th>状态</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>公开注册</td><td><span class="badge post">已有</span></td><td><code>POST /api/agents/register</code>：只给 name（≤64 字），返回一次性明文 Key，库里只存 <code>sha256(key)</code></td></tr>
+<tr><td>注册防滥用</td><td><span class="badge post">已有</span></td><td>每来源 1 小时 10 次 / 1 天 30 次（<code>MOYI_REGISTER_PER_HOUR</code> / <code>_PER_DAY</code>），实例可在设置里关掉自助注册（<code>open_register=0</code>），关掉后仍保留带 <code>MOYI_CODE</code> 的通道，避免把自己锁在门外</td></tr>
+<tr><td>换钥（等价于改密）</td><td><span class="badge post">已有</span></td><td><code>POST /api/agents/:id/reset-key</code>，仅 master；旧 Key 立即失效，新 Key 只回一次（<code>lib/moyi.js:1213-1222</code>）。日志只记「谁给谁换了钥匙」，密钥本身绝不进日志</td></tr>
+<tr><td>注销</td><td><span class="badge del">只有硬删</span></td><td>master 或超管 <code>DELETE /agents/:id</code>，<b>连带抹掉该 Agent 全部记忆</b>，不可自助、不可撤销、无冷静期。清单要的「用户自己点注销、数据保留期内可撤回」没有</td></tr>
+</tbody>
+</table>
+</div>
+<p>换句话说：Agent 面缺的不是功能，是「面向终端用户的自助性」——它的每一次凭据变更都要求一个更高权限的主体来执行。这正是它和管理面共享的设计取向。</p>
+
+<h3>口令哈希：清单要 bcrypt，墨忆用 scrypt</h3>
+<p><span class="badge patch">换了做法</span> 目标是同一个：<b>带盐、可调代价、验签恒定时间</b>。墨忆用 Node 内置 <code>crypto.scrypt</code>（<code>lib/console.js:26-46</code>），参数 N=16384 / r=8 / p=1 / keylen=32，和 OWASP 给的 scrypt 下限一致，抗 GPU 的能力不逊于 bcrypt（bcrypt 只抗时间代价，内存硬度和 scrypt 不是一个量级）。两个必须知道的实现细节：</p>
+<ul>
+<li><b><code>maxmem</code> 必须显式放宽</b>，否则 N=16384 在 Node 默认上限下直接抛错（<code>lib/console.js:30,36</code>）。</li>
+<li><b><code>timingSafeEqual</code> 前要对齐长度</b>：两个 Buffer 长度不同会抛，直接 <code>return false</code> 又把「哈希长度」变成可计时区分的分支。代码先补齐或截断到同长再比（<code>lib/console.js:66-74</code>）。</li>
+</ul>
+<p>换成 bcrypt 唯一的好处是格式更通用、跨语言工具多；代价是引入一个原生或纯 JS 依赖，零依赖前提就没了。</p>
+
+<h3>口令策略：长度 + 黑名单，不校验「复杂度」</h3>
+<p><span class="badge patch">换了做法</span> <code>checkPasswordPolicy</code>（<code>lib/console.js:78-85</code>）只有四条：≥10 字符、≤512 字符、不能是同一字符重复、不能等于弱口令表里的某一项（整串精确匹配，不分大小写）。<b>没有</b>「必须包含大小写数字符号」这类规则——研究表明那套规则产出的口令并没有更强，反而催生出 <code>Password@2024</code> 这种模板。诚实说一句：<code>password123</code> 能过这道闸门，因为长度够且不在弱口令表里。</p>
+<div class="box warn">
+<p class="box-t">校验只在服务端</p>
+<p>口令策略、用户名格式（<code>^[A-Za-z0-9_\-\u4e00-\u9fa5]{2,32}$</code>，<code>lib/console.js:87-90</code>）全部在服务端执行。前端<b>不做</b>实时校验，也没有 <code>required</code> / <code>pattern</code> 属性——客户端校验能绕过，写了只会造成两套规则跑偏。清单要求「前端实时校验」的话，这是明确未满足项，补的时候也必须保留服务端这套为唯一真相。</p>
+</div>
+
+<h3>认证方案：Session + Cookie（清单给的选项之一）</h3>
+<p><span class="badge post">已有</span> 清单在「JWT 双令牌 / Session+Cookie」之间让实现者选，墨忆选后者，理由只有一个但很硬：<b>要能即时吊销</b>。JWT 做不到「改口令后其它设备立刻下线」，除非再建一张吊销表——那就等于把会话状态又存回数据库，还多了一套签名密钥要管。现有实现：</p>
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>发令牌</b><span><code>randomBytes(32).base64url</code>，不透明、不自带任何声明（<code>lib/console.js:100</code>）</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>只存哈希</b><span>库里存 <code>sha256(token)</code>；数据库被整库读走也没法拿来登录</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>版本比对</b><span><code>admins.session_version</code> 与 <code>admin_sessions.session_version</code> 不一致即作废</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">4</span><b>过期即删</b><span>用到已过期的行顺手 DELETE，不需要定时任务</span></div>
+</div>
+<p>Cookie 属性（<code>lib/console.js:146-151</code>）：</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
+<p>清单要的 <b>HttpOnly ✓、Secure 有条件 ✓</b>。<code>Secure</code> 只在 <code>X-Forwarded-Proto</code> 第一段是 <code>https</code> 时才加——墨忆不听 TLS，只能信反代传进来的头，配错的后果和自查方法在 <a href="https.html#proto">HTTPS 与反向代理</a>。</p>
+<p>有效期是<b>固定窗口，不滑动续期</b>：<code>sessionExpiresAt = now + SESSION_TTL_MS</code>（<code>lib/console.js:95-98</code> 钳制、<code>:106</code> 计算到期），默认 7 天，钳制在 1 分钟 ~ 30 天。会话表 <code>admin_sessions</code> 只存<b>当前有效</b>的会话（<code>token_hash UNIQUE</code> + <code>expires_at</code>），用到已过期的行顺手删掉，所以它不需要定时清理任务，也<b>不是</b>登录历史表。</p>
+
+<h3>失败锁定：机制一致，数值不同</h3>
+<p><span class="badge patch">换了做法</span> 清单要「连续 5 次失败锁 30 分钟」。墨忆是<b>15 分钟内 10 次失败</b>就回 429（<code>MOYI_ADMIN_FAIL_PER_15MIN</code>，默认 10，<code>lib/moyi.js:251</code>），想改成 5 次/更久直接调环境变量。更重要的是三条清单没提、但决定这个机制能不能用的细节：</p>
+<ul>
+<li><b>只统计失败</b>，成功一次就清零（<code>lib/audit.js:149-171</code>）。早期版本把成功请求也计入，结果正常用户半小时被自己锁在门外。</li>
+<li><b>三套独立键空间</b>：注册 <code>reg:h:</code> / <code>reg:d:</code>，Agent key 穷举 <code>auth:</code>，管理台口令 <code>adminauth:</code>。同一个计数器管所有，一个人试错能把全场锁掉。</li>
+<li><b>键是哈希过的</b>：<code>sha256(XFF 第一跳 || socketIP)</code> 前 16 位（<code>lib/audit.js:125-131</code>），内存里不留明文 IP。</li>
+</ul>
+
+<h3>IP 超频拉黑：没有</h3>
+<p><span class="badge del">真没有</span> 清单要「单 IP 每分钟 &gt;10 次请求 → 拉黑 1 小时」。墨忆只有<b>滑动窗口限流</b>，没有封禁状态，且窗口在内存里，实例重启就清零。这是有意的分工：可靠封禁要在反代或防火墙层做（<code>nginx limit_req</code> + <code>limit_req_status 429</code>，或 fail2ban），应用层做封禁在 serverless 上必然失真。</p>
+
+<h3>通知渠道：一个都不接</h3>
+<p><span class="badge opt">刻意不做</span> 清单要「异地登录 / 改密 / 注册发信或短信提醒」。墨忆不发任何邮件或短信——两者都需要外部服务和密钥，而密钥一进来就撞上「环境变量之外的凭据往哪放」这个问题。现有替代是<b>管理台会话页</b>：超管能列出该实例全部有效会话（普通管理员只看自己的，<code>lib/moyi.js:955</code>），发现不认识的设备直接 <code>DELETE /api/console/sessions/:id</code> 撤销；改口令本身就会把旧会话全部作废。</p>
+
+<h3>越权与注入：清单的三项防线</h3>
+<div class="tw">
+<table>
+<thead><tr><th>要求</th><th>状态</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>SQL 注入</td><td><span class="badge post">已有</span></td><td>没有一处拼 SQL——查询是拼 PostgREST 的 URL 串。风险因此变成「查询串注入」，挡法是入参白名单：<code>safeUuid</code> / <code>safeId</code> / <code>IMPORTANCE</code> 集合（<code>lib/moyi.js:270-279</code>），格式不过就 400，用户名为 <code>encodeURIComponent</code></td></tr>
+<tr><td>XSS</td><td><span class="badge post">已有</span></td><td>库里存的一直是原文，输出时转义——从不做「入库前过滤标签」那种两头不靠的做法。管理台 <code>esc()</code> 覆盖 <code>&amp; &lt; &gt; " '</code>（<code>public/console.js:19</code>），另有 7 处直接赋 <code>textContent</code>（天然免转义，Key 与 MCP 配置片段这类要整段复制的字段走这条）。这套机制的脆弱点在第五节写明了</td></tr>
+<tr><td>CSRF</td><td><span class="badge post">已有</span></td><td>两层独立：<code>SameSite=Strict</code> + 写操作必须带 <code>X-Moyi-Console: 1</code>（<code>lib/moyi.js:633-638</code>）。跨站 <code>&lt;form&gt;</code> 发不出自定义头，跨站 <code>fetch</code> 想发就先过 CORS 预检</td></tr>
+<tr><td>越权访问</td><td><span class="badge post">已有</span></td><td>管理员改口令只能改自己（要验当前口令）；改别人、删别人、撤销别人会话一律要超管；不能停用或降级自己；不能删掉最后一个超管</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box warn">
+<p class="box-t">两项清单会要求、墨忆确实没有的响应头</p>
+<p><code>Content-Security-Policy</code> 与 <code>X-Frame-Options</code>：<b>没有设置</b>（全仓库无一处下发），HSTS 也没有。当前靠 <code>SameSite=Strict</code> + 无第三方脚本 + <code>HttpOnly</code> 兜住点击劫持与内联注入的主要路径，但这是「够用」而不是「合规」。要么在反代统一加头，要么在 <code>server.js</code> 的响应封装里补——加之前先确认管理台没有内联脚本会被 CSP 打死。</p>
+</div>
+
+<h3>HTTPS 与 CORS</h3>
+<p>HTTPS 强制 <span class="badge opt">刻意不做</span>：应用不听 TLS，不做 301 跳转，只从 <code>X-Forwarded-Proto</code> 读结论。清单里「强制 HTTPS」这一项在墨忆的部署形态下属于反代职责，配置见 <a href="https.html">HTTPS 与反向代理</a>。</p>
+<p>CORS <span class="badge patch">换了做法</span>：白名单由 <code>MOYI_ALLOWED_ORIGINS</code> 显式列出（<code>lib/moyi.js:575-585</code>），不带 <code>Origin</code> 头的请求不返回 CORS 头——但 <code>localhost:3906</code> 与 <code>127.0.0.1:3906</code> 是<b>无条件</b>加进去的，方便本地开发。清单要求「CORS 只允许自己的域名」的话，这条要知道：<code>127.0.0.1:3906</code> 永远在允许列表里，任何监听本机 3906 的页面都能带着用户浏览器里的凭据打这个 API。公网实例应把墨忆绑到非本机可达的网卡，或改端口后确认这两条本机源无实际意义。设成 <code>*</code> 会回一个字面量 <code>*</code>，等于把整个 API 开放给任何网页，生产禁用。</p>
+
+<h2>五、前端对照</h2>
+<p>清单要求「适配 PC/H5，前端实时校验，防 XSS」。逐条对上管理台（<code>public/console.html</code> + <code>public/console.js</code> + <code>public/console.css</code>）：</p>
+<div class="tw">
+<table>
+<thead><tr><th>要求</th><th>状态</th><th>墨忆现状</th></tr></thead>
+<tbody>
+<tr><td>PC 端可用</td><td><span class="badge post">已有</span></td><td>原生 JS 单页，无框架无构建产物；四个页签（概览 / Agent / 管理员 / 会话）+ 设置</td></tr>
+<tr><td>H5 / 窄屏适配</td><td><span class="badge post">已有</span></td><td><code>console.css</code> 有 960px 与 720px 两档断点重排，登录与表单在手机上可填可提交。文档站另有一套（<code>docs/assets/docs.css</code>，≤1000px 抽屉式目录、≤600px 再压一档）</td></tr>
+<tr><td>防 XSS（输出侧）</td><td><span class="badge patch">够用但脆</span></td><td>入库存<b>原文</b>、输出时转义，这是正确取向。但机制是「<code>esc()</code> 函数 + 调用点自觉」：全文 <code>innerHTML</code> 只有 4 处，插进去的动态行都先过 <code>esc()</code>；另有 7 处走 <code>textContent</code>（天然安全，Agent Key 一类要能整段复制的字段都走这条）。风险说清楚：<b>4 处 innerHTML 里同时写着未转义的字面量</b>（如 <code>&lt;p class="field-note"&gt;无在线会话。&lt;/p&gt;</code>）——目前安全，但将来谁把用户可控字符串塞进这类模板就破防</td></tr>
+<tr><td>前端实时校验</td><td><span class="badge del">真没有</span></td><td>表单<b>没有</b> <code>required</code> / <code>pattern</code> 属性，<code>console.js</code> 里也没有长度判断。口令策略、用户名格式（<code>^[A-Za-z0-9_\-\u4e00-\u9fa5]{2,32}$</code>，<code>lib/console.js:87-90</code>）全在服务端跑，不合规就回 400 原话展示。这是取舍：客户端校验能绕过，写两套规则早晚跑偏。代价是提交前不给提示，体验差一档</td></tr>
+<tr><td>记住我</td><td><span class="badge opt">刻意不做</span></td><td>会话已在服务端活 7 天（固定窗口，不滑动续期，<code>lib/console.js:95-98,106</code>），再做一个「延长版会话」只是多一条要审的分支</td></tr>
+<tr><td>退出登录</td><td><span class="badge post">已有</span></td><td><code>POST /api/console/logout</code>：删会话行 + 下发 <code>Max-Age=0</code> 的空 Cookie（<code>lib/moyi.js:794</code>）</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">Cookie 属性（<code>lib/console.js:146-151</code>）</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
+<p>清单要的 <b>HttpOnly ✓、Secure 有条件 ✓</b>。<code>Secure</code> 只在 <code>X-Forwarded-Proto</code> 第一段是 <code>https</code> 时才加——墨忆不听 TLS，只能信反代传进来的头。配错的后果和自查方法见 <a href="https.html#proto">HTTPS 与反向代理</a>。</p>
+</div>
+
+<h2>六、合规与留痕</h2>
+<p>如果这份清单是为了过等保或满足《网络安全法》的日志留存要求，下面这一项<b>必须先补</b>，而且要清楚现在缺的具体是什么：</p>
+<div class="tw">
+<table>
+<thead><tr><th>合规日志通常需要</th><th>墨忆</th></tr></thead>
+<tbody>
+<tr><td>时间、事件类型</td><td><span class="badge post">有</span> <code>{seq, ts, actor, action, detail}</code></td></tr>
+<tr><td>来源 IP、设备 UA</td><td><span class="badge del">无</span> 审计里根本没有这两个字段，采集处也没取</td></tr>
+<tr><td>持久化、重启不丢</td><td><span class="badge del">无</span> 进程内存环形缓冲，容量默认 2000 条，重启即失</td></tr>
+<tr><td>多实例汇总</td><td><span class="badge del">无</span> 每个实例各记各的</td></tr>
+<tr><td>留存 ≥6 个月、日志本身不可篡改</td><td><span class="badge del">无</span> 连一天都留不住</td></tr>
+</tbody>
+</table>
+</div>
+<p>这不是疏忽，是取舍，而且代码<b>主动承认</b>：审计接口响应里固定带一句 <code>warning</code>——「实例重启或扩缩容后即失效；无状态部署下不可作为合规留痕」（<code>lib/moyi.js:1402</code>）。怕的就是有人把它当留痕用。</p>
+<p><b>脱敏存储</b> <span class="badge patch">换了做法</span>：清单关心手机号、邮箱、身份证在库中和日志里的掩码。墨忆不采集这三样，所以「存储侧脱敏」没有适用对象——但<b>同类问题以另一种形式存在</b>，那就是凭据。审计事件写入前的规则（<code>lib/audit.js:44-61</code>）：键名命中 <code>api_key|token|secret|password|master_code|authorization</code> 一律替换成 <code>«redacted»</code>，值命中 <code>moyi_[0-9a-f]{8,}</code> 截断为 <code>moyi_xxx…(redacted)</code>。口令、Agent Key、会话 token 在任何日志与响应里都不出现原文。真要按清单落地一个网站账号系统，该抄的就是这一条：<b>脱敏要发生在写入前的最后一道函数里</b>，而不是指望调用方记得别传敏感字段。</p>
+
+<h2>七、如果真要补齐</h2>
+<p>按「补起来最不破坏现有设计」排序，前四项在零依赖下能自己做，后三项建议交给外部。</p>
+<div class="tw">
+<table>
+<thead><tr><th>缺口</th><th>补法</th><th>代价</th></tr></thead>
+<tbody>
+<tr><td>登录日志持久化</td><td>新建 append-only 表 <code>login_events(ts, actor, action, ip_hash, ua, ok)</code>，在 <code>audit()</code> 旁边加一条 <code>supa(…,'POST')</code> 分支，内存环形缓冲保留做「最近事件」快查</td><td>最小。一次写入、不改现有语义，是缺口里性价比最高的一项</td></tr>
+<tr><td>IP / UA 采集</td><td>上一条里的两列，取自现成的 <code>clientKey(req)</code>（哈希 IP）与 <code>user-agent</code> 头</td><td>要新增 UA 截断（头可以很长），且必须明确不落明文 IP</td></tr>
+<tr><td>软删除 + 冷静期</td><td><code>admins</code> 加 <code>deleted_at</code>，查询侧一律带 <code>deleted_at=is.null</code>，冷静期后由维护任务真删</td><td>中等：<code>needs_setup</code>、超管兜底计数、会话列表都要跟着改，漏一处就出现「已注销账号还能登」</td></tr>
+<tr><td>CSP / X-Frame-Options / HSTS</td><td>反代统一加响应头（推荐），或在 <code>server.js</code> 的响应封装里补</td><td>低，但要回归测管理台。文档站与 <code>console.html</code> 有内联脚本，CSP 写严了会直接白屏</td></tr>
+<tr><td>图形验证码 / 滑块</td><td>放反代或接 Cloudflare Turnstile 一类，应用层只在 <code>adminAuthGate</code> 之外多信一个头</td><td>自建等于把「防机器人」这个无底洞揽进来；零依赖做不出真有效的</td></tr>
+<tr><td>邮件 / 短信提醒与找回</td><td>需要 SMTP/SMS 服务 + 凭据管理 + 一次性 token 表 + 限频 + 反滥用</td><td>整条依赖链进来，且造出「远程改管理员口令」这个最大攻击面。墨忆选择不做，不是做不动</td></tr>
+<tr><td>第三方 OAuth 登录</td><td>需要 provider 抽象、state/nonce 校验、账号绑定表</td><td>零依赖下要手写 PKCE 与 JWKS 校验，收益不抵风险；真要接建议放独立网关做 OIDC 反代</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box ok">
+<p class="box-t">一句话总结</p>
+<p>清单里的<b>安全底线</b>（口令哈希加盐恒定时间、会话即时吊销、HttpOnly/SameSite、CSRF、注入与越权、限速、凭据脱敏）墨忆都有，其中几项做法和清单写的不一样但目标更强。清单里的<b>网站账号业务</b>（自助注册、验证码、找回、通知、第三方登录、手机号邮箱）墨忆基本都没有——它管的是「谁能有资格操作这台机器」，不是「谁是我站上的用户」。真正需要在上线前补的只有两件事：<b>持久化登录日志（含 IP/UA）</b>和<b>安全响应头</b>。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

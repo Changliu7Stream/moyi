@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>引导安装与管理台 · 墨忆文档</title>
+<meta name="description" content="墨忆管理台怎么用：一次性引导安装页的行为与封存机制、四类页签（Agent / 管理员 / 会话 / 设置）、口令与会话的安全模型、忘记口令的手工恢复。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">使用 / Console</p>
+<h1>引导安装与管理台</h1>
+<p class="lede">管理台是给<b>部署者</b>用的，不是给 Agent 用的。它管三件事：发钥匙（Agent）、管人（管理员）、开关（实例设置）。它<b>看不见任何一条记忆的正文</b>——这是刻意的。</p>
+
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 agents / memories / admins / admin_sessions / settings 五张表</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>配环境变量</b><span>存储 URL + token（这步不能省，也不能在网页里填）</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>访问 /console</b><span>自动进入引导安装页，填用户名口令</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">4</span><b>装完即封存</b><span>引导页永久消失，此后只能登录</span></div>
+</div>
+
+<h2 id="bootstrap">引导安装页：一次性的，装完就没了</h2>
+<p>首次访问 <code>http://&lt;你的地址&gt;:3906/console</code>，如果服务端判定这是台干净的新实例，页面会直接变成安装向导：填<b>管理员用户名</b>与<b>口令</b>，可选填实例显示名、是否开放公开注册。确认提交后，这个入口<b>永久关闭</b>。</p>
+
+<h3>「是否已安装」由服务端说了算</h3>
+<p>页面本身不做判断，每次渲染都先请求公开的 <code>GET /api/console/status</code>。判定式是四个条件的与：</p>
+<pre><code>needs_setup = !admins表缺失 &amp;&amp; !settings表缺失 &amp;&amp; 无管理员 &amp;&amp; 未落锁</code></pre>
+<p>所以「换个浏览器 / 清 Cookie / 改前端变量」都<b>没法</b>把安装页重新叫出来。想再看到安装页，只有一条路：把库清空——而这在任何已投产实例上都是自杀式操作。完整的状态字段真值表在<a href="runtime.html#layer3">环境自动识别</a>那页。</p>
+
+<div class="box info">
+<p class="box-t">为什么要做「一次性」而不是留个安装页备用</p>
+<p>公开的「创建第一个超管」表单是互联网上最常见的靶子：任何人抢先提交一次，就把整台机器变成了他的。把它设计成装完即封存，等于在时间轴上消灭了这个攻击面——窗口只在部署后的那几分钟存在。</p>
+</div>
+
+<h3>并发安装只有一个能赢</h3>
+<p>假设两个人同时打开安装页并都点了提交。落锁靠往 <code>settings</code> 插一行 <code>setup_locked</code>（该表以 <code>key</code> 为主键），PostgREST 在主键冲突时回 <b>409</b>——这个 409 就是 CAS 的「抢锁失败」。输的一方会<b>删掉自己刚建的管理员</b>，然后回 409「本实例刚刚已被安装」。所以绝不会留下两个首任超管，也不会留下「建了管理员但没落锁」的中间态。</p>
+
+<h3>你勾的选项会真的生效</h3>
+<p>迁移 SQL 会预插 <code>instance_name</code>、<code>open_register</code> 等行，所以安装时写选项用的是「先 PATCH，命中 0 行再 merge-duplicates 补插」的 upsert。用裸 POST 的后果是撞主键 409、又因 <code>return=minimal</code> 没人检查状态码，症状非常阴险：<b>你在安装页关掉了公开注册，装完发现它还是开着的</b>。</p>
+
+<h2 id="login">登录与安全模型</h2>
+<div class="tw">
+<table>
+<thead><tr><th>环节</th><th>实现</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td>口令存储</td><td><code>scrypt</code>，N=16384 / r=8 / p=1 / keylen=32，自描述格式 <code>scrypt$N$r$p$salt$hash</code></td><td>参数写进哈希里，日后调参也不影响旧口令校验；服务端无法还原明文</td></tr>
+<tr><td>口令强度</td><td>≥10 字符、≤512、拒绝单字符重复、拒绝 6 个极常见口令</td><td>只做下限拦截，不搞复杂度恐吓</td></tr>
+<tr><td>用户名</td><td>2–32 字符，字母数字 <code>_</code> <code>-</code> 或中文，自动 trim</td><td>允许中文管理员名</td></tr>
+<tr><td>会话 token</td><td>32 字节随机 → <code>base64url</code>；<b>库里只存它的 sha256</b></td><td>拖库拿不到可用的会话凭据</td></tr>
+<tr><td>Cookie</td><td><code>HttpOnly; SameSite=Strict; Path=/; Max-Age=…</code>，且仅当 <code>X-Forwarded-Proto: https</code> 时追加 <code>Secure</code></td><td>见<a href="https.html#proto">反向代理页</a></td></tr>
+<tr><td>整账号踢下线</td><td><code>admins.session_version</code> 计数；改口令 / 被停用 / 改角色都会 +1</td><td>不需要维护「撤销列表」，一次更新作废全部旧会话</td></tr>
+<tr><td>CSRF</td><td>双层：<code>SameSite=Strict</code> + 所有非 GET 的控制台写请求必须带 <code>X-Moyi-Console: 1</code></td><td>跨站表单无法设置自定义头，缺头即 403——即使你已登录</td></tr>
+<tr><td>口令暴破</td><td>每来源 15 分钟 <b>10</b> 次失败（<code>MOYI_ADMIN_FAIL_PER_15MIN</code>），与 Agent Key 的计数器<b>完全分开</b></td><td>某台机器在试 Agent Key，不该顺手把你锁在管理台外面</td></tr>
+</tbody>
+</table>
+</div>
+<p>登录失败时，「用户名不存在」和「口令错误」回<b>完全相同</b>的提示与状态码（401），不给用户名枚举留缝。</p>
+<div class="box warn">
+<p class="box-t">注意：口令策略只挡「离谱」，不挡「不够强」</p>
+<p>它不查字典、不要求字符类别混合，<code>password123</code> 这类变体是<b>能过</b>的（弱口令清单是精确匹配，不是包含匹配）。管理员口令是整台实例的门，请自己选一条足够长的、独一无二的口令——比如 20 个随机字符。</p>
+</div>
+
+<h2 id="tabs">四个页签</h2>
+
+<h3>Agent（发号与除名）</h3>
+<p>这里建的每个 Agent 都是<b>独立钥匙、独立记忆</b>。点「创建并取钥」后一次性拿到 API Key 和一段可直接粘贴的 MCP 配置：</p>
+<pre><code>{
+  "mcpServers": {
+    "moyi": {
+      "command": "node",
+      "args": ["/absolute/path/to/moyi/mcp-server.js"],
+      "env": { "MOYI_API": "http://localhost:3906", "MOYI_KEY": "moyi_…" }
+    }
+  }
+}</code></pre>
+<div class="box stop">
+<p class="box-t">Key 只在创建和轮换时出现一次</p>
+<p>库里存的是它的 sha256，<b>没有可逆存储</b>，管理台之后再也读不出来。丢了就点「重置 Key」——旧 Key 立刻失效，那份旧 MCP 配置随之作废。请把新 Key 直接贴进客户端配置，别截图、别贴进聊天工具。</p>
+</div>
+<p>列表只显示每个 Agent 的<b>条数</b>（high / medium / low 与已同步数），不显示内容。这一页看不到别人记了什么。</p>
+<p>另外一处硬限制：<b>通过管理台建的 Agent 一律是 <code>role='agent'</code></b>。即便请求体里塞了 <code>role: 'master'</code> 也会被服务端覆盖掉——否则「Agent 身份」就成了通往更大权限的跳板，master 能读审计、能回填别人的向量。</p>
+
+<h3>管理员（管人）</h3>
+<p>仅超管可见。两种角色：<code>super</code> 能管人和改设置，<code>admin</code> 只能管自己的会话与口令。护栏是四条：</p>
+<ul>
+<li>不能停用<b>自己</b>；不能改自己的<b>角色</b>（防止把自己降完就升不回来）；不能删<b>自己</b></li>
+<li>系统里<b>至少留一个可用超管</b>——仍有其它超管时，停用/降级/删除某个超管是允许的</li>
+<li>停用会立刻作废该账号全部会话；恢复后需重新登录</li>
+<li>超管给别人重置口令时，<b>看不到旧口令</b>，只能设新口令</li>
+</ul>
+<p>注意管理员与 Agent 是<b>两个独立的表、两个独立的概念</b>，不是同一套账号的不同权限级别。管理员不能用 Cookie 调 Agent 接口，Agent 也不能用 Key 登管理台。</p>
+
+<h3>会话</h3>
+<p>看这台实例上现在有哪些登录态，可单条撤销。超管能看全部管理员的会话，普通管理员只能看<b>自己的</b>。列表里恰好一条会标 <code>current</code>（就是你正在用的这条）——它比对的是会话行本身的 id，不是账号 id，所以同一账号多设备不会全部被标成本次。</p>
+
+<h3>设置</h3>
+<p>三项，写在 <code>settings</code> 表里，改完即生效（最迟延迟见下）：</p>
+<div class="tw">
+<table>
+<thead><tr><th>设置</th><th>效果</th><th>谁能改</th></tr></thead>
+<tbody>
+<tr><td>实例显示名</td><td>前端标题，最长 40 字符（超出截断）</td><td>超管</td></tr>
+<tr><td>开放公开注册</td><td>关掉后 <code>POST /api/agents/register</code> 回 <b>403</b>，只能由管理台或 master 发号。<b>但带正确 <code>master_code</code> 的请求仍然放行</b>——否则关掉注册会连自己人一起锁在门外</td><td>超管</td></tr>
+<tr><td>全局记忆</td><td>跨 Agent <b>只读</b>可见，详见<a href="agents.html#global">下一节</a></td><td>超管</td></tr>
+</tbody>
+</table>
+</div>
+<p>可写键是白名单硬编码的，白名单外的键会被<b>静默忽略</b>，尤其 <code>setup_locked</code> 绝不能从设置接口写——不然就等于留了个「把自己重新变回未安装」的后门。</p>
+<div class="box info">
+<p class="box-t">改设置到全实例生效，最慢 <code>MOYI_SETTINGS_TTL_MS</code>（默认 5000 毫秒）</p>
+<p>设置读一遍会缓存在进程内 5 秒。同进程里自己改自己立即生效（写入即失效缓存）；<b>多实例部署</b>（Vercel、或 Docker 副本数 &gt;1）才会有这个几秒窗口。要彻底没有延迟就设 0，代价是每个请求多一次 settings 查询。</p>
+</div>
+
+<h2 id="recovery">忘记管理员口令：只能手工改库</h2>
+<p><b>没有「忘记密码」按钮，这是有意的。</b>自助找回需要一条对外通道（邮箱、短信、安全问题），每一条都是新的攻击面；而这个系统里一个超管口令就等于全库记忆，所以宁可麻烦运维，也不给攻击者多开一个入口。</p>
+<p>恢复步骤（需直连数据库）：</p>
+<pre><code># 1) 用同库代码里的同一套算法生成新哈希
+node -e "const c=require('./lib/console.js');c.hashPassword('新口令').then(console.log)"
+
+# 2) 写回该行，并把 session_version 加一
+UPDATE public.admins
+   SET password_hash = '&lt;上一步输出&gt;',
+       session_version = &lt;当前值 + 1&gt;,
+       disabled = false
+ WHERE username = '你的管理员名';</code></pre>
+<p><code>session_version</code> 必须 +1：新口令生效的同时把该账号<b>所有旧会话</b>作废。否则那个哈希包在拖库场景里被破解后，攻击者手里的旧 Cookie 会一直好用到自然过期。</p>
+<p>如果整个实例连一个可用超管都不剩（比如误删了全部管理员），先手工插一行 <code>role='super'</code> 的管理员再登录。<b>不要去删 <code>settings</code> 里的 <code>setup_locked</code> 来「重开安装页」</b>——那等于把公开的超管创建入口重新打开，任何能访问该地址的人都可以给自己造一个超管。</p>
+
+<h2 id="trust">哪些东西必须留在环境变量里</h2>
+<p>管理台<b>不能</b>配置数据库连接，也<b>不能</b>改 embedding provider 的地址与密钥。理由见<a href="env.html">环境变量页</a>开头那条铁律：如果网页能改后端地址，任何一次 XSS 都能把整台实例的记忆流去攻击者的库——口令、会话、全部数据一起走。把这条缝留在文件系统里，浏览器碰不到。</p>
+
+<div class="box ok">
+<p class="box-t">一句话原则</p>
+<p>引导页只在<b>部署的那几分钟</b>存在；管理台日常只做<b>发钥匙、管人、开开关</b>三件事；记忆的正文永远只属于拿着那把 Agent Key 的人。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

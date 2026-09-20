@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>数据库结构 · 墨忆文档</title>
+<meta name="description" content="墨忆的五张表、索引、函数，以及自托管与 Supabase 两套栈在权限模型上的差异。以 sql/00-schema.sql 与 docker/init/10-roles.sql 为权威。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap"><main>
+<p class="crumb">参考 / Schema</p>
+<h1>数据库结构</h1>
+<p class="lede">墨忆一共五张表：agents、memories、admins、admin_sessions、settings，外加两个 SQL 函数。本页以 <code>sql/00-schema.sql</code> 与 <code>docker/init/10-roles.sql</code> 为权威，逐列、逐索引讲清「为什么长这样」。</p>
+
+<h2>五张表</h2>
+
+<h3>agents — 持有 API Key 的工具身份</h3>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>uuid</td><td>PK, <code>gen_random_uuid()</code></td><td>Agent 是机器创建、机器引用，UUID 避免自增 ID 暴露数量与枚举风险</td></tr>
+<tr><td><code>name</code></td><td>text</td><td>NOT NULL</td><td>显示用，允许重名——name 不参与认证</td></tr>
+<tr><td><code>api_key_hash</code></td><td>text</td><td>NOT NULL</td><td>存 sha256 而非原文。用 text 而非 bytea 是因为 PostgREST 对 bytea 的 hex 编码处理不如 text 直观</td></tr>
+<tr><td><code>role</code></td><td>text</td><td>NOT NULL, 默认 <code>'agent'</code></td><td>取值 <code>agent</code> / <code>master</code>，由服务层控制，<b>数据库无 CHECK 约束</b>——master 的 key 允许多个共存，部分索引已承担唯一性语义</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>审计排序用</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>memories — 记忆条目</h3>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>text</td><td>PK</td><td>格式 <code>mem_</code> + 16 位 hex。用 text 而非 uuid：ID 由服务层生成（非数据库），text 允许前缀标识类型，便于日志排查</td></tr>
+<tr><td><code>agent_id</code></td><td>uuid</td><td>NOT NULL, FK → agents ON DELETE CASCADE</td><td>归属。级联删除：删 Agent 时记忆一并清除，不留孤儿行</td></tr>
+<tr><td><code>content</code></td><td>text</td><td>NOT NULL</td><td>记忆正文，上限 20000 字符由服务层校验</td></tr>
+<tr><td><code>summary</code></td><td>text</td><td>可空</td><td>自动截断的摘要，列表页展示用</td></tr>
+<tr><td><code>importance</code></td><td>text</td><td>NOT NULL, 默认 <code>'medium'</code>, <b>CHECK IN ('high','medium','low')</b></td><td>决定衰减速度与同步策略。CHECK 约束在数据库层兜底，防止服务层 bug 写入非法值</td></tr>
+<tr><td><code>tags</code></td><td>text[]</td><td>NOT NULL, 默认 <code>'{}'</code></td><td>关键词标签数组，PostgreSQL 原生数组类型，支持 <code>@&gt;</code> 包含查询</td></tr>
+<tr><td><code>source</code></td><td>text</td><td>可空</td><td>来源标记（mcp / api / force 等），排查用</td></tr>
+<tr><td><code>synced</code></td><td>boolean</td><td>NOT NULL, 默认 false</td><td>是否已同步到外部存储。high 重要性默认 true</td></tr>
+<tr><td><code>synced_at</code></td><td>timestamptz</td><td>可空</td><td>最近一次同步时间</td></tr>
+<tr><td><code>access_count</code></td><td>integer</td><td>NOT NULL, 默认 0</td><td>访问计数，衰减算法的输入之一</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>创建时间</td></tr>
+<tr><td><code>updated_at</code></td><td>timestamptz</td><td>可空</td><td>最近更新。NULL 表示从未修改</td></tr>
+<tr><td><code>embedding</code></td><td>vector(384)</td><td>可空</td><td>语义向量。384 维与 <code>lib/embeddings.js</code> 的 DIM 常量必须一致；旧行可能为 NULL（尚未回填）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>admins — 管理控制台的人</h3>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>uuid</td><td>PK, <code>gen_random_uuid()</code></td><td>与 agents 分开的主键空间</td></tr>
+<tr><td><code>username</code></td><td>text</td><td>NOT NULL UNIQUE</td><td>登录名，唯一</td></tr>
+<tr><td><code>password_hash</code></td><td>text</td><td>NOT NULL</td><td>scrypt 自描述格式：<code>scrypt$N$r$p$salt$hash</code>。永不下发前端</td></tr>
+<tr><td><code>role</code></td><td>text</td><td>NOT NULL, 默认 <code>'admin'</code>, CHECK IN ('super','admin')</td><td>super 可管人，admin 只管自己的会话和口令</td></tr>
+<tr><td><code>disabled</code></td><td>boolean</td><td>NOT NULL, 默认 false</td><td>停用开关。停用后 session_version 被推到极大值，旧会话立刻作废</td></tr>
+<tr><td><code>session_version</code></td><td>bigint</td><td>NOT NULL, 默认 0</td><td>改口令或停用时 +1。会话行携带创建时的版本号，版本不符即失效——<b>无需吊销列表</b>即可「退出所有设备」</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>审计用</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>admin_sessions — 管理台会话</h3>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>uuid</td><td>PK</td><td>会话行 ID，用于前端标注「本次会话」</td></tr>
+<tr><td><code>admin_id</code></td><td>uuid</td><td>NOT NULL, FK → admins ON DELETE CASCADE</td><td>归属管理员</td></tr>
+<tr><td><code>token_hash</code></td><td>text</td><td>NOT NULL UNIQUE</td><td>存 token 的 sha256，不存原文。UNIQUE 约束同时充当查找索引</td></tr>
+<tr><td><code>session_version</code></td><td>bigint</td><td>NOT NULL, 默认 0</td><td>创建时快照 admins.session_version。口令一改，旧行的版本号就对不上</td></tr>
+<tr><td><code>expires_at</code></td><td>timestamptz</td><td>NOT NULL</td><td>会话过期时间，由 <code>MOYI_SESSION_DAYS</code> 控制</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>审计用</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>settings — 实例级配置</h3>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>key</code></td><td>text</td><td>PK</td><td>一行一个键。键名白名单在服务层控制</td></tr>
+<tr><td><code>value</code></td><td>text</td><td>NOT NULL</td><td>统一存 text，布尔用 <code>'0'</code>/<code>'1'</code>——避免多列反复 ALTER</td></tr>
+<tr><td><code>updated_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>最后修改时间</td></tr>
+</tbody>
+</table>
+</div>
+<p>初始种子行：<code>instance_name='墨忆'</code>、<code>global_memory='0'</code>、<code>open_register='1'</code>。</p>
+<p><code>setup_locked</code> 这一行同时充当「已安装」的 CAS 锁。引导页安装成功后写入该行，后续安装请求因唯一约束 409 被拒。<b>删掉这一行等于重新打开安装入口</b>——任何人访问引导页都能再建一个超管。</p>
+
+<h2>索引</h2>
+<div class="tw">
+<table>
+<thead><tr><th>索引名</th><th>表</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>agents_pkey</code></td><td>agents</td><td>btree PK</td><td>主键</td></tr>
+<tr><td><code>agents_api_key_hash_idx</code></td><td>agents</td><td>UNIQUE btree, <code>WHERE role &lt;&gt; 'master'</code></td><td>部分唯一索引：普通 agent 的 key hash 必须唯一，master 的允许多个共存（多 master 场景）。SQL 注释原文：「master 的 hash 允许重复，普通 agent 的 key 必须唯一」</td></tr>
+<tr><td><code>memories_pkey</code></td><td>memories</td><td>btree PK</td><td>主键</td></tr>
+<tr><td><code>memories_embedding_idx</code></td><td>memories</td><td>HNSW, <code>vector_cosine_ops</code></td><td>余弦距离近邻索引。要求 <code>embedding</code> 列维度固定为 384——HNSW 不支持变长向量</td></tr>
+<tr><td><code>memories_agent_created_idx</code></td><td>memories</td><td>btree (agent_id, created_at DESC)</td><td>按 Agent 列出记忆、按时间倒序——列表页的主查询路径</td></tr>
+<tr><td><code>memories_synced_idx</code></td><td>memories</td><td>btree (agent_id, synced)</td><td>同步批处理查询：<code>synced=false</code> 的条目</td></tr>
+<tr><td><code>admins_pkey</code></td><td>admins</td><td>btree PK</td><td>主键</td></tr>
+<tr><td><code>admins_username_key</code></td><td>admins</td><td>UNIQUE btree</td><td>username 唯一约束的隐式索引</td></tr>
+<tr><td><code>admin_sessions_pkey</code></td><td>admin_sessions</td><td>btree PK</td><td>主键</td></tr>
+<tr><td><code>admin_sessions_token_hash_key</code></td><td>admin_sessions</td><td>UNIQUE btree</td><td>token_hash 唯一约束的隐式索引，已能支撑等值查询</td></tr>
+<tr><td><code>admin_sessions_token_idx</code></td><td>admin_sessions</td><td>btree (token_hash)</td><td><b>冗余</b>：与上面的 UNIQUE 约束索引功能完全重叠。不影响正确性，只是可清理——历史遗留，早期版本先建表后加 UNIQUE，后来补了 UNIQUE 但没删旧索引</td></tr>
+<tr><td><code>admin_sessions_admin_idx</code></td><td>admin_sessions</td><td>btree (admin_id)</td><td>按管理员列出会话、按管理员级联清理</td></tr>
+<tr><td><code>settings_pkey</code></td><td>settings</td><td>btree PK</td><td>主键</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box info">
+<p class="box-t">为什么 memory 的 id 是 text 而 agent 的 id 是 uuid</p>
+<p>Agent 是数据库自己生成的（<code>gen_random_uuid()</code>），用 uuid 天然合适。记忆条目是服务层生成的（<code>mem_</code> + hex），用 text 能保留前缀标识，便于在日志和 URL 里一眼区分 ID 类型。两个主键空间互不干扰。</p>
+</div>
+
+<h2>SQL 函数</h2>
+
+<h3>match_memories — 向量近邻检索</h3>
+<pre><code>match_memories(
+  query_embedding vector(384),
+  match_agent_id  uuid,
+  match_count     int DEFAULT 20,
+  min_similarity  float DEFAULT 0.10
+) RETURNS TABLE (
+  id, agent_id, content, summary, importance, tags, source,
+  synced, access_count, created_at, updated_at, similarity
+)
+-- SECURITY INVOKER, SET search_path = public, pg_temp</code></pre>
+<p><code>match_agent_id</code> 传 NULL = 不限定 agent（全局记忆模式）。<code>similarity</code> 由 <code>1 - cosine_distance</code> 算出，值域 (0, 1]。函数本身不做权限校验，归属过滤由调用方（墨忆服务层）负责。</p>
+
+<h3>increment_access — 访问计数原子自增</h3>
+<pre><code>increment_access(p_id text) RETURNS void
+-- SECURITY INVOKER, SET search_path = public, pg_temp</code></pre>
+<p>消除服务层「读-改-写」的并发窗口。优先走 RPC，函数不存在时退回读-改-写。</p>
+
+<h2>自托管 vs Supabase：权限模型差异</h2>
+
+<div class="box stop">
+<p class="box-t">自托管栈下 PostgREST 绝不能暴露公网</p>
+<p><code>docker/init/10-roles.sql</code> 给 <code>web_anon</code> 授了<b>全部五张表</b>的 SELECT/INSERT/UPDATE/DELETE。不开 RLS 意味着：拿到 anon token 就能直接读 <code>admins.password_hash</code>——那是人挑的口令的 scrypt 哈希，可离线爆破。这不是理论风险，是架构决定的。</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>维度</th><th>自托管（00-schema + 10-roles）</th><th>Supabase（vector-search）</th></tr></thead>
+<tbody>
+<tr><td>RLS</td><td><b>关</b>。信任边界在墨忆服务层</td><td><b>开</b>。五张表全部 ENABLE</td></tr>
+<tr><td>web_anon 权限</td><td>五张表全量 CRUD + 两个函数 EXECUTE</td><td><b>无任何权限</b>（无 policy = 默认拒绝）</td></tr>
+<tr><td>service_role</td><td>不存在这个角色</td><td>显式 policy 全量放行</td></tr>
+<tr><td>admins 暴露风险</td><td>PostgREST 暴露 = 口令哈希库公开</td><td>RLS 默认拒绝，anon 读不到</td></tr>
+<tr><td>admin_sessions_token_idx</td><td>有（冗余，见上）</td><td>无</td></tr>
+<tr><td>memories_synced_idx</td><td>有</td><td>无</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>自托管栈的真实 GRANT 语句（<code>docker/init/10-roles.sql</code>）：</p>
+<pre><code>GRANT USAGE ON SCHEMA public TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.agents  TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.memories TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.settings TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admins TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_sessions TO web_anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.match_memories(vector(384), uuid, int, float) TO web_anon, authenticated;</code></pre>
+
+<p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：五张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
+
+<h2>为什么墨忆只依赖 PostgREST 协议</h2>
+<p>墨忆不认识「数据库」，只认识「PostgREST 协议的 HTTP 接口」。所有存储操作都是 <code>fetch(REST + path, opts)</code>——自托管的 PostgREST 和 Supabase 托管的 PostgREST 可以互换，代码一行不改。差异只在 URL 形态和路径前缀（Supabase 挂 <code>/rest/v1</code>，原生 PostgREST 挂根路径）。</p>
+
+<div class="box warn">
+<p class="box-t">两套 SQL 不能混着跑</p>
+<p>早期版本把整个 <code>./sql</code> 目录挂进 <code>docker-entrypoint-initdb.d</code>，结果 <code>vector-search.sql</code> 也被执行了——那份给两张表开 RLS 且默认拒绝 anon，于是自托管栈表现为「所有记忆凭空消失」（每条读都是 0 行，且不报错）。现在 docker-compose 只精确挂载 <code>00-schema.sql</code> + <code>10-roles.sql</code>。</p>
+</div>
+
+<h2>迁移与升级</h2>
+<ul>
+<li>所有语句使用 <code>IF NOT EXISTS</code> / <code>OR REPLACE</code>，可重复执行。</li>
+<li>从旧版升级：<code>00-schema.sql</code> 幂等，重跑一遍补建缺表；自托管再跑 <code>10-roles.sql</code>（授权），Supabase 再跑 <code>vector-search.sql</code>（RLS + RPC）。<b>全新库两种后端都必须先跑 <code>00-schema.sql</code></b>。</li>
+<li><code>embedding</code> 列是后加的（<code>ALTER TABLE ... ADD COLUMN IF NOT EXISTS</code>），旧库升级不会丢数据，但需要回填向量（<code>POST /admin/backfill-embeddings</code>）。</li>
+<li><code>setup_locked</code> 行删了会重开安装入口——正常情况下不需要碰它。</li>
+</ul>
+
+<h2>自查：连真库看元数据</h2>
+<pre><code>-- 连进数据库
+psql -h localhost -U moyi -d moyi
+
+-- 看 memories 表的完整定义（列、索引、约束）
+\d+ memories
+
+-- 查 agents 表的所有约束（验证没有 role CHECK）
+SELECT conname, contype, pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE conrelid = 'public.agents'::regclass;
+
+-- 查所有索引
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+ORDER BY tablename, indexname;
+
+-- 确认 RLS 开关
+SELECT relname, relrowsecurity, relforcerowsecurity
+FROM pg_class
+WHERE relname IN ('agents','memories','admins','admin_sessions','settings');</code></pre>
+
+</main></div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

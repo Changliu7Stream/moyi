@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent 隔离与全局记忆 · 墨忆文档</title>
+<meta name="description" content="墨忆里多个 Agent 如何互不干扰：默认的严格隔离、MCP 配置怎么分发、全局记忆开关到底放宽了什么、以及为什么它是隐私边界而不是权限边界。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">使用 / Agents &amp; Memory</p>
+<h1>Agent 隔离与全局记忆</h1>
+<p class="lede">一台墨忆可以同时服务很多个 Agent。默认它们<b>彼此完全看不见</b>——各自的 Key、各自的记忆、各自的统计。需要跨 Agent 共享时，在管理台打开「全局记忆」，但那个开关<b>只放宽读，不放宽写</b>。</p>
+
+<h2 id="default">默认：彻底隔离</h2>
+<p>这是墨忆的立命之本。每个 Agent 注册时拿到一把独立 Key，所有读写都以「这把 Key 属于谁」为边界：</p>
+<div class="tw">
+<table>
+<thead><tr><th>操作</th><th>作用域</th><th>实现</th></tr></thead>
+<tbody>
+<tr><td>列表 / 检索 / 按 id 读</td><td>只有自己的</td><td>查询强制带 <code>agent_id=eq.&lt;自己的 id&gt;</code></td></tr>
+<tr><td>写入 / 改写 / 删除 / 同步</td><td>只有自己的</td><td>同上；跨 agent 根本命中不了行</td></tr>
+<tr><td>语义去重合并</td><td><b>只在</b>自己那套里找重复</td><td><code>findSimilar</code> 硬编码 <code>agent_id=eq.&lt;aid&gt;</code>（lib/moyi.js:302）</td></tr>
+<tr><td>衰减体检与降级落库</td><td>只有自己的</td><td>用强制的 <code>OWN_SCOPE</code> 快照，不受全局开关影响</td></tr>
+<tr><td>统计 <code>/api/stats</code></td><td>只有自己的</td><td>同样带归属过滤</td></tr>
+</tbody>
+</table>
+</div>
+<p>换个角度说：甲 Agent 的 Key 泄漏，泄漏面就是甲的那一套记忆，不会连累乙和丙。</p>
+
+<h2 id="mcp">给多个 Agent 各配一份 MCP</h2>
+<p>「独立」落在配置上就是：<b>一个 Agent 一份 <code>env</code>，两份配置除了 <code>MOYI_KEY</code> 之外可以完全一样</b>。管理台的 Agent 页在每次创建/重置 Key 后，会直接产出可粘贴的片段：</p>
+<pre><code>{
+  "mcpServers": {
+    "moyi": {
+      "command": "node",
+      "args": ["/absolute/path/to/moyi/mcp-server.js"],
+      "env": {
+        "MOYI_API": "http://localhost:3906",
+        "MOYI_KEY": "moyi_&lt;这个 Agent 专属的 key&gt;"
+      }
+    }
+  }
+}</code></pre>
+<p>把这份片段分别贴进不同客户端（Claude Desktop、IDE 插件、自建 Agent 进程），它们就各自连到同一个墨忆、但读写各自的记忆。<code>mcp-server.js</code> 是个无状态的 stdio 薄壳，多开几份互不打架。</p>
+<div class="box warn">
+<p class="box-t">别图省事共用一把 Key</p>
+<p>两个 Agent 用同一把 Key，就等于它们<b>共享同一套记忆</b>——彼此的私人备忘互相可见、互相去重合并、互相影响衰减排序。要隔离就得一号一钥。真要共享，正确的做法是开全局记忆（下面），而不是合用凭据。</p>
+</div>
+<p>Key 泄露或想断开某个 Agent：管理台点「重置 Key」，旧 Key 立即失效；「删除」则连 Agent 记录和它的全部记忆一起级联删除（<code>ON DELETE CASCADE</code>），<b>不可逆</b>。</p>
+
+<h2 id="global">全局记忆：只放宽「能读到谁」</h2>
+<p>管理台 → 设置 → 打开「全局记忆」。生效范围用一句话概括：</p>
+<div class="box info">
+<p class="box-t">读扩到全库，写锁在自己</p>
+<p>作用域的实现就一个函数：<code>readFilter(aid, settings)</code> —— 严格模式返回 <code>agent_id=eq.&lt;aid&gt;</code>，全局模式返回<b>空串</b>（不加过滤）。而所有写路径<b>不使用</b>这个函数，它们永远显式带 <code>agent_id=eq.&lt;aid&gt;</code>。</p>
+</div>
+
+<div class="tw">
+<table>
+<thead><tr><th>行为</th><th>严格模式（默认）</th><th>全局记忆开启后</th></tr></thead>
+<tbody>
+<tr><td>列表 / 检索</td><td>只有自己的</td><td><b>看到所有人的</b>，标注归属</td></tr>
+<tr><td>按 id 读别人的</td><td>404（与「不存在」不可区分）</td><td>200，带 <code>_read_only: true</code></td></tr>
+<tr><td>改写别人的</td><td>404</td><td><b>403</b>「只读：这条记忆属于其他 Agent」</td></tr>
+<tr><td>删除别人的</td><td>404</td><td><b>403</b>，且不执行删除</td></tr>
+<tr><td>同步别人的</td><td>404</td><td><b>403</b></td></tr>
+<tr><td>去重合并</td><td>只在自己那套里找</td><td><b>仍然只在自己那套里找</b></td></tr>
+<tr><td>衰减 / 遗忘</td><td>只扫自己的</td><td><b>只扫自己的</b>（用 OWN_SCOPE）</td></tr>
+<tr><td>访问计数</td><td>只有自己读到才涨</td><td><b>别人读到不涨你的计数</b></td></tr>
+<tr><td>图谱</td><td>自己那套的共现图</td><td>随读作用域放宽（会包含他人节点）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>为什么写侧不一起放宽</h3>
+<p>不是因为偷懒。跨 Agent 的写会造成<b>数据损坏</b>，而不是带来便利：</p>
+<ul>
+<li><b>去重合并会污染归属。</b>甲说「用户喜欢猫」、乙说「用户对猫过敏」，若允许跨 agent 合并，两条事实会被糅进同一条记录、写进其中一人的名下，两个 Agent 的上下文就此串味。</li>
+<li><b>衰减会互相牵制。</b>让 A 的 <code>/decay/apply</code> 去降级 B 的记忆，等于 A 能改写 B 的记忆优先级——那是越权写，不是共享。</li>
+<li><b>访问计数决定衰减速度。</b>若他人的读取也算进你的计数，一条被某个高频 Agent 反复扫到的记忆会「假装自己很有活力」，衰减模型就失真了。所以自增只在<b>归属者自己读到</b>时发生。</li>
+</ul>
+
+<h3 id="403">403 与 404 的不对称，是故意的</h3>
+<p>同一件「碰别人记忆」的事，两种模式给的状态码不同，这不是疏忽：</p>
+<div class="tw">
+<table>
+<thead><tr><th>模式</th><th>跨 agent 写</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>严格</td><td><b>404</b></td><td>隔离模式必须<b>连「这条存在」都不透露</b>。若回 403「存在但你不能改」，就成了存在性探针，可用状态码差异把别人的记忆 id 逐个枚举出来</td></tr>
+<tr><td>全局</td><td><b>403</b></td><td>此模式下「别人的记忆存在」本来就是公开事实（列表里就能看到），所以可以给一个更诚实、更好排查的答复</td></tr>
+</tbody>
+</table>
+</div>
+<p>关掉全局记忆后，之前那些 403 会退回 404——但<b>数据一条都没少</b>（测试专门回归了这点）。</p>
+
+<h3>怎么判断自己读到的是谁的</h3>
+<p>全局模式下，返回条目会带三个辅助字段：</p>
+<pre><code>{
+  "id": "mem_a1",
+  "content": "用户喜欢喝无糖乌龙茶",
+  "scope": "global",        // 本次检索的作用域
+  "_own": false,            // 是不是我自己的
+  "_owner": "claude-desktop", // 归属者的名字（查不到时回落到 agent_id）
+  "_read_only": true        // 别人的条目一律标只读
+}</code></pre>
+<p>归属者名字来自 <code>agents</code> 表的 <code>id → name</code> 映射，带 60 秒进程内缓存，避免每次列表都多打一次库。</p>
+
+<h2 id="caveat">⚠️ 它是隐私边界，不是权限边界</h2>
+<div class="box stop">
+<p class="box-t">开全局记忆前请先接受这一条</p>
+<p>全局记忆让<b>任何一个 Agent 都能读到全库记忆</b>。这意味着：<b>任何一把 Agent Key 泄露，泄露的就是全部人的记忆</b>，而不只是那一个 Agent 的。原本「一号一钥、各管各的」提供的爆炸半径控制，在这一步被取消了。</p>
+</div>
+<p>它解决的只是「要不要让编程助手看见日程助手的记忆」这个<b>隐私</b>问题，不是「谁能改谁的数据」这个<b>权限</b>问题——后者由写侧锁定继续兜住。所以：</p>
+<ul>
+<li>只在<b>同一个信任域</b>里开（比如全是你自己的 Agent、共享同一份用户画像本来就合理）。</li>
+<li>不要为了「方便查看别人的记忆」而开着——那是 <code>_owner</code> 标注能解决的临时需求，长期开着就多一份泄漏面。</li>
+<li>开了之后，Key 的保管标准要按「全库钥匙」来衡量，而不是「单个 Agent 的钥匙」。</li>
+<li>关掉它只需在设置里关，<b>不会改动任何数据</b>，也不会清掉别人的访问计数。</li>
+</ul>
+
+<h2 id="register">配套开关：要不要开放公开注册</h2>
+<p>设置里另一个与 Agent 有关的开关。<b>关掉</b>之后：</p>
+<div class="tw">
+<table>
+<thead><tr><th>请求</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/agents/register</code>（不带口令）</td><td><b>403</b>，注册闸门拦下</td></tr>
+<tr><td>同上，带<b>正确</b>的 <code>master_code</code></td><td><b>201</b> 放行——闸门不该把自己人也锁在门外</td></tr>
+<tr><td>同上，带<b>错误</b>的 <code>master_code</code></td><td>403（与「闸门关着」同形，不给探测口令的反馈）</td></tr>
+<tr><td>管理台创建 Agent</td><td>不受此开关影响，照常</td></tr>
+</tbody>
+</table>
+</div>
+<p>公网可达的实例建议关掉公开注册，改由管理台发号。无论开关状态如何，注册接口始终受 <code>MOYI_REGISTER_PER_HOUR</code>（默认 10/小时）限速——它是公开接口，只能限速不能真关。</p>
+
+<h2 id="verify">怎么实测隔离是否生效</h2>
+<p>两个 Agent 各建一把 Key，然后：</p>
+<pre><code># 甲记一条带明显指纹的记忆
+curl -s -X POST $API/api/memories/remember \
+  -H "X-Moyi-Key: $KEY_A" -H 'Content-Type: application/json' \
+  -d '{"content":"甲的专属暗号：紫金山天文台观测编号 ZJ-7741","force":true}'
+
+# 乙去搜 → 严格模式应当搜不到
+curl -s -X POST $API/api/memories/search \
+  -H "X-Moyi-Key: $KEY_B" -H 'Content-Type: application/json' \
+  -d '{"query":"紫金山天文台观测编号 ZJ-7741"}'
+# 期望：results 为空，且 scope 为 "own"
+
+# 管理台打开全局记忆后，同样的请求 → 能搜到，且带 _own:false / _read_only:true / scope:"global"
+# 再让乙试着改它 → 期望 403
+curl -s -X PATCH $API/api/memories/mem_a1 \
+  -H "X-Moyi-Key: $KEY_B" -H 'Content-Type: application/json' \
+  -d '{"content":"被乙改掉了"}'
+
+# 关键收尾：确认甲的内容原样未变（403 必须真的什么都没写）
+curl -s $API/api/memories/mem_a1 -H "X-Moyi-Key: $KEY_A"</code></pre>
+<div class="box ok">
+<p class="box-t">最后那一步别省</p>
+<p>判断隔离是否有效，光看状态码不够——要<b>回到归属者那边确认数据没被动过</b>。集成测试里正是这么断言的（「越权写尝试后内容原样未变」）。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

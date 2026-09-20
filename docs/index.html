@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>总览与架构 · 墨忆文档</title>
+<meta name="description" content="墨忆（Moyi）是给 AI Agent 用的记忆中间件：零运行时依赖的 Node 服务 + PostgREST 存储 + MCP 接口。本页说明它由哪些部件组成、请求怎么流动。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">开始 / Overview</p>
+<h1>墨忆文档</h1>
+<p class="lede">墨忆是一个给 AI Agent 用的<b>记忆中间件</b>：Agent 把值得记住的话丢进来，它负责向量化、去重、按语义召回、随时间衰减。它本身不是 Agent，也不调用大模型 —— 它站在 Agent 和你的数据库之间。</p>
+
+<div class="box info">
+<p class="box-t">这套文档怎么读</p>
+<p>如果你只想跑起来，直接看<a href="quickstart.html">十分钟跑通</a>。
+如果你卡在「我这个环境到底算哪种」，看<a href="runtime.html">环境自动识别</a>——
+那页把代码里每一条判断都摊开了写。</p>
+</div>
+
+<h2>它解决什么问题</h2>
+<p>大模型的上下文窗口是临时的。一次对话结束，Agent 就忘了你是谁、上次让它别做什么、你偏好在什么环境里写代码。墨忆把这部分「长期记忆」挪到数据库里，检索时再按需捞回来。</p>
+<p>关键设计是<b>每个 Agent 各有一套记忆</b>。你的编程助手不该看见你日程助手的私人备忘。默认隔离，只有在管理台显式打开「全局记忆」时才跨 Agent 可见，且只放宽读、不放宽写（详见<a href="agents.html">Agent 与全局记忆</a>）。</p>
+
+<h2>部件构成</h2>
+<div class="tw">
+<table>
+<thead><tr><th>部件</th><th>是什么</th><th>为什么这么选</th></tr></thead>
+<tbody>
+<tr><td><code>server.js</code></td><td>本地 HTTP 服务入口，兼静态文件服务</td><td>只用 Node 内置模块，<code>npm install</code> 都不需要</td></tr>
+<tr><td><code>lib/moyi.js</code></td><td>全部业务逻辑，被本地服务和 Serverless 入口共用</td><td>一份逻辑两处跑，避免「本地能跑线上炸」</td></tr>
+<tr><td><code>lib/console.js</code></td><td>管理台侧的口令哈希、会话、设置白名单</td><td>与 Agent 侧认证完全分开</td></tr>
+<tr><td><code>lib/embeddings.js</code></td><td>向量化，可插拔 provider</td><td>不配 provider 时退回本地特征哈希，离线可用</td></tr>
+<tr><td><code>lib/decay.js</code></td><td>记忆活力计算与降级</td><td>只降权不删除，删除永远是显式动作</td></tr>
+<tr><td><code>lib/graph.js</code></td><td>共现图谱构建</td><td>纯前端力导向渲染，不引 d3</td></tr>
+<tr><td><code>mcp-server.js</code></td><td>MCP 协议的 stdio 服务端</td><td>让 Claude / 其他 MCP 客户端直接连</td></tr>
+<tr><td><code>api/index.js</code></td><td>Vercel Serverless 入口</td><td>薄壳，转调 <code>lib/moyi.js</code></td></tr>
+<tr><td><code>public/</code></td><td>水墨风前端：账本页 + 管理台页</td><td>零框架，纯 HTML/CSS/JS</td></tr>
+<tr><td><code>sql/</code></td><td>两套迁移脚本（自托管 / Supabase）</td><td>同一套表结构，权限模型不同</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>一次请求的流向</h2>
+<p>理解这张图，后面所有部署差异都只是「中间那一跳换人」而已：</p>
+
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>Agent / 浏览器</b><span>带 <code>X-Moyi-Key</code>（Agent）或会话 Cookie（管理台）发请求</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>墨忆服务</b><span>认证、限速、业务规则、向量生成、读写权限裁剪</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>PostgREST</b><span>把 REST 查询翻译成 SQL；它是唯一的存储出口</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">4</span><b>PostgreSQL + pgvector</b><span>存数据；HNSW 索引做近邻召回</span></div>
+</div>
+
+<p>第 3 步是关键：<b>墨忆不认识「数据库」，只认识「PostgREST 协议的 HTTP 接口」</b>。所以自托管的 PostgREST 和 Supabase 托管的 PostgREST 可以互换，代码一行不改。这就是 <a href="runtime.html">环境自动识别</a> 那页存在的理由——两种后端的差异全在 URL 形态和路径前缀上。</p>
+
+<h2>两套认证面，互不通用</h2>
+<p>这是 v3.3 起最容易搞混的地方，先在这里钉住：</p>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>Agent 面</th><th>控制台面</th></tr></thead>
+<tbody>
+<tr><td><b>路径前缀</b></td><td><code>/api/*</code></td><td><code>/api/console/*</code></td></tr>
+<tr><td><b>凭据</b></td><td><code>X-Moyi-Key: moyi_xxx</code></td><td>用户名+口令 → 会话 Cookie</td></tr>
+<tr><td><b>口令/密钥存储</b></td><td>API Key 的 sha256</td><td>scrypt 哈希（自描述格式）</td></tr>
+<tr><td><b>谁在用</b></td><td>各个 Agent 程序、MCP 客户端</td><td>人，在浏览器里</td></tr>
+<tr><td><b>能读记忆正文？</b></td><td>只能读自己那套</td><td><b>读不到任何记忆正文</b></td></tr>
+<tr><td><b>跨面生效？</b></td><td colspan="2">不能。管理员 Cookie 打 <code>/api/memories</code> 回 401，反之亦然</td></tr>
+</tbody>
+</table>
+</div>
+<p>「管理员看不见记忆正文」是刻意的：管理员是<b>管工具的人</b>，不是<b>读别人日记的人</b>。要读某个 Agent 的记忆，得拿那个 Agent 自己的 Key。</p>
+
+<h2>三种部署形态</h2>
+<div class="cards">
+<a class="card" href="deploy.html#supabase"><b>连外部 Supabase</b><span>只管墨忆一个容器/进程，数据库托管。上手最快。</span></a>
+<a class="card" href="deploy.html#selfhost"><b>自托管全栈</b><span>Postgres + PostgREST + 墨忆三个容器，数据完全在自己手里。</span></a>
+<a class="card" href="deploy.html#vercel"><b>Vercel Serverless</b><span>免运维，但限速与审计退化为「每实例独立」。适合个人低频用。</span></a>
+</div>
+
+<h2>硬性前提</h2>
+<div class="box stop">
+<p class="box-t">数据库连接信息只能用环境变量配</p>
+<p>管理台里<b>没有</b>填数据库地址的地方，这不是没做完。如果网页能配后端地址，那么任何一次 XSS 都具备把整个实例的后端换成攻击者服务器能力——口令、会话、全部记忆都会流过去。所以这条缝留在文件系统里，不留给浏览器。</p>
+</div>
+<p>另两个前提在<a href="https.html">HTTPS 与反向代理</a>里细说：<code>PostgREST 绝不暴露公网</code>、<code>反向代理必须正确传 X-Forwarded-Proto</code>。</p>
+
+<h2>边界：它做不到什么</h2>
+<p>与其列待办，不如把做不到的写清楚：</p>
+<ul>
+<li><b>不接 embedding provider 时，「语义检索」名不副实。</b>默认是本地特征哈希，近义词召回明显偏弱。去重也因此不能只信向量。</li>
+<li><b>衰减永不自动删除。</b><code>would_forget</code> 只是一份候选清单，要真删得逐条发 <code>DELETE</code>。</li>
+<li><b>审计日志在进程内存里</b>，重启即失、多实例不共享，不能当合规留痕。</li>
+<li><b>图谱是共现图，不是语义图。</b>边权重不宜作为推理依据。</li>
+<li><b>没有自助找回口令的通道。</b>忘了口令只能手工改库，这是取舍而非遗漏（见<a href="account-gaps.html">对照页</a>）。</li>
+</ul>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

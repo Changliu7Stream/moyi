@@ -6,6 +6,20 @@ AI 记忆中间层。基于 MCP 协议，让任何 AI 工具共享同一套记�
 
 换工具，不丢记忆。换存储后端（Supabase ↔ 自托管 Postgres），也不用改代码。
 
+详细文档在 [`docs/`](./docs/)（源码目录）——部署、环境变量逐条解释、环境自动识别的判定规则、
+接口清单、数据库结构、安全机制，以及一页「对照：网站账号体系」。**已开 GitHub Pages 的话**，
+同一套内容在线：<https://changliu7stream.github.io/moyi/>。
+
+开启方法（一次性，仓库 → Settings → Pages）：**Source** 选 `Deploy from a branch`，
+**Branch** 选 `main`，**Folder** 选 `/docs`，Save。约 10 秒后顶部出现站点地址。
+
+> 选 `/docs` 而不是 `/（root）`：选根目录会把整个代码仓库发布出去，
+> 而 Pages 站点是公开的，即使仓库是私有仓库。`docs/.nojekyll` 用来关掉 Jekyll 构建——
+> 本站没有 Markdown 也不需要构建，不关的话 `_` 开头的文件会被静默丢掉、某些写法会被 Liquid 解析器吃掉。
+
+ Pages 生效需要一次推送到 `main`（本地提交不会触发构建）。发布源选 `/docs` 时站点落在项目站
+根地址（`https://<owner>.github.io/moyi/`），站内链接全是相对路径，两种落点都能正常工作。
+
 ---
 
 ## 为什么需要
@@ -131,7 +145,10 @@ cp .env.example .env.local     # 填入 MOYI_DB_URL / MOYI_DB_TOKEN / MOYI_CODE
 
 #### 2. 初始化数据库
 
-- **Supabase**：后台 → SQL Editor → 粘贴执行 `sql/vector-search.sql`。
+- **Supabase**：后台 → SQL Editor → **按顺序执行两份**：先 `sql/00-schema.sql`（建五张表），
+  再 `sql/vector-search.sql`（开 RLS + 建 RPC）。只跑后者会报
+  `relation "public.agents" does not exist`——那份脚本不建 `agents` / `memories`，
+  它是给表已存在的旧库做升级用的。
 - **自托管**：`psql -d moyi -f sql/00-schema.sql` 再 `psql -d moyi -f docker/init/10-roles.sql`
   （用 Docker 的话这步自动完成）。
 
@@ -182,7 +199,7 @@ node server.js
 
 | | Supabase（托管） | 自托管 Postgres + PostgREST |
 | --- | --- | --- |
-| 建表 SQL | `sql/vector-search.sql` | `sql/00-schema.sql` + `docker/init/10-roles.sql` |
+| 建表 SQL | `sql/00-schema.sql` → 再 `sql/vector-search.sql` | `sql/00-schema.sql` + `docker/init/10-roles.sql` |
 | 鉴权头 | 额外带 `apikey` | 只带 `Authorization: Bearer <JWT>` |
 | 路径前缀 | 自动补 `/rest/v1` | 不补 |
 | RLS | 开启，anon 默认全拒 | **刻意关闭**（隔离在服务层，见下） |

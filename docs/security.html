@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>安全机制 · 墨忆文档</title>
+<meta name="description" content="墨忆的安全设计：scrypt 口令哈希、API Key sha256 存储、会话作废、CSRF 双层、限速三桶、全局记忆隐私边界、审计脱敏、CORS、以及它刻意不做什么。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">安全 / Security</p>
+<h1>安全机制</h1>
+<p class="lede">这一页逐项讲墨忆的安全实现与<b>为什么这么做</b>。每条给 <code>file:line</code>，方便对照代码。设计取向是：零依赖下能做的全做，做不到的写清楚而不是假装没有。</p>
+
+<h2 id="password">口令哈希：scrypt</h2>
+<p>管理员口令用 Node 内置 <code>crypto.scrypt</code>，不引入 bcrypt（零依赖选型）。参数（<code>lib/console.js:28</code>）：</p>
+<div class="tw">
+<table>
+<thead><tr><th>参数</th><th>值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>N</td><td>16384</td><td>CPU/内存代价，2^14</td></tr>
+<tr><td>r</td><td>8</td><td>内存块大小因子</td></tr>
+<tr><td>p</td><td>1</td><td>并行度</td></tr>
+<tr><td>keylen</td><td>32</td><td>输出字节数</td></tr>
+<tr><td>maxmem</td><td><code>Math.max(64*1024*1024, 128*N*r*p*2)</code></td><td>Node 默认上限太紧，N=16384 会直接抛「missing error」，必须显式放宽（<code>lib/console.js:30,36</code>）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>自描述哈希格式</h3>
+<pre><code>scrypt$16384$8$1$&lt;salt_b64&gt;$&lt;hash_b64&gt;</code></pre>
+<p>六段用 <code>$</code> 分隔（<code>lib/console.js:41-46</code>）：算法名、N、r、p、salt（16 字节 base64）、派生键（32 字节 base64）。参数随哈希一起存，将来调参不必重算全库——老哈希按老参数验，新哈希按新参数生。</p>
+
+<h3>timingSafeEqual 对齐处理</h3>
+<p>验证时不能直接 <code>return got === want</code>——字符串比较会在第一个不同字符处提前返回，攻击者据此逐字节猜出哈希。必须用 <code>crypto.timingSafeEqual</code>，且<b>两个 Buffer 长度必须相同</b>。</p>
+<p>问题：如果存下来的哈希格式被篡改（比如换了一个 keylen），<code>got</code> 和 <code>want</code> 长度不同。直接 <code>return false</code> 会让「哈希长度」变成侧信道。所以代码先补齐到相同长度再比（<code>lib/console.js:66-74</code>）：</p>
+<pre><code>if (got.length !== want.length) {
+  const pad = want.length - got.length;
+  got = pad > 0
+    ? Buffer.concat([got, Buffer.alloc(pad)], want.length)
+    : got.subarray(0, want.length);
+}
+return crypto.timingSafeEqual(got, want);</code></pre>
+<p>结果一样是 <code>false</code>，但分支形态一致，计时器看不出差别。</p>
+
+<h2 id="api-key">API Key：sha256 存储</h2>
+<p>Agent 密钥形态：<code>moyi_</code> + 16 字节 hex（<code>lib/moyi.js:99</code>）。库里只存 <code>sha256(key)</code>（<code>lib/moyi.js:100</code>），认证时算请求里 key 的哈希再查表（<code>lib/moyi.js:262-266</code>）。</p>
+<p><b>master 的部分唯一索引例外</b>：<code>agents_api_key_hash_idx</code> 是 <code>UNIQUE WHERE (role &lt;&gt; 'master')</code>——master 的哈希不强制唯一。原因：master 由 <code>MOYI_CODE</code> 口令注册，理论上同一口令可以注册多个 master（虽然罕见），强制唯一会让第二个 master 注册静默失败。</p>
+
+<h2 id="session">会话：不透明 token + 服务端存哈希</h2>
+<p>会话 token 是 <code>crypto.randomBytes(32).toString('base64url')</code>（<code>lib/console.js:100-102</code>），库里只存 <code>sha256(token)</code>（<code>lib/console.js:103-105</code>）。不用自签 JWT——那种做不到退出即失效，改密码也不会踢掉旧会话。</p>
+
+<h3>session_version 整账号作废</h3>
+<p><code>admins</code> 表有 <code>session_version</code> 列，<code>admin_sessions</code> 表也有。登录时把当前版本写进会话行；验证会话时比对两者，不一致即作废（<code>lib/console.js:116-120</code>）。</p>
+<p>改口令时 <code>session_version + 1</code>（<code>lib/moyi.js:824-826</code>），旧会话版本号对不上，全部失效——这就是「没有吊销列表也能退出所有设备」的实现。停用账号时把 <code>session_version</code> 推到 <code>Date.now()</code>（<code>lib/moyi.js:898</code>），效果相同。</p>
+
+<h3>改口令轮换本 token</h3>
+<p>改口令成功后，响应里带新的 Set-Cookie（<code>lib/moyi.js:828-831</code>）——旧会话全废，但<b>当前浏览器</b>立刻拿到新 token，不必重新登录。</p>
+
+<h2 id="csrf">CSRF 双层防护</h2>
+<p>控制台写操作（POST/PATCH/DELETE）要求两样东西同时满足：</p>
+<ol>
+<li><b>Cookie <code>SameSite=Strict</code></b>（<code>lib/console.js:150</code>）：跨站请求不带 Cookie，挡住最常见的 CSRF 形态（跨站表单提交）</li>
+<li><b><code>X-Moyi-Console: 1</code> 头</b>（<code>lib/moyi.js:633-638</code>）：跨站 <code>fetch</code> 发不出自定义头（会被 CORS 预检拦住），跨站 <code>&lt;form&gt;</code> 也发不出自定义头</li>
+</ol>
+<p>两道独立的门，不依赖任何一条假设。即使 <code>SameSite=Strict</code> 在某些浏览器版本有兼容问题，第二层头检查仍然挡得住。</p>
+<div class="box info">
+<p class="box-t">为什么自定义头能防 CSRF</p>
+<p>浏览器的同源策略 + CORS 预检机制规定：跨站 <code>fetch</code> 若要带自定义头，必须先发 <code>OPTIONS</code> 预检请求，服务端显式放行才能继续。墨忆的 CORS 白名单（<code>lib/moyi.js:575-585</code>）默认只放行 <code>localhost:3906</code> 与 <code>MOYI_ALLOWED_ORIGINS</code> 里显式列出的源，攻击者的 <code>evil.com</code> 不在白名单里，预检直接被拒，自定义头发不过去。</p>
+</div>
+
+<h2 id="cookie">Cookie 属性与 X-Forwarded-Proto</h2>
+<p>Set-Cookie 的确切属性串（<code>lib/console.js:146-151</code>）：</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
+<p><code>Secure</code> 标志由 <code>X-Forwarded-Proto: https</code> 决定（<code>lib/console.js:147-148</code>）。墨忆自己不听 443，HTTPS 总是由反向代理终结，所以只能从代理传进来的头里判断。代理链可能拼成 <code>x-forwarded-proto: https, http</code>，取<b>第一段</b>（最外层、用户实际看到的协议）。</p>
+<div class="box warn">
+<p class="box-t">代理不传这个头 → Cookie 永远不带 Secure</p>
+<p>后果是明文链路上会话 token 可被嗅探重放。自查：登录后看响应头 <code>Set-Cookie</code> 末尾有没有 <code>; Secure</code>。没有就说明代理没正确传 <code>X-Forwarded-Proto</code>。配置详见<a href="https.html">HTTPS 与反向代理</a>。</p>
+</div>
+
+<h2 id="rate-limit">限速：三套独立 key 空间</h2>
+<p>限速按「调用方标识 + 动作」分桶，<b>三套独立的 key 前缀</b>（<code>lib/audit.js:141,143,175</code> + <code>lib/moyi.js:252,254</code>）：</p>
+<div class="tw">
+<table>
+<thead><tr><th>前缀</th><th>用途</th><th>窗口</th><th>默认限额</th></tr></thead>
+<tbody>
+<tr><td><code>reg:h:</code></td><td>注册（每小时）</td><td>1 小时</td><td>10</td></tr>
+<tr><td><code>reg:d:</code></td><td>注册（每天）</td><td>1 天</td><td>30</td></tr>
+<tr><td><code>auth:</code></td><td>Agent 认证失败</td><td>15 分钟</td><td>30</td></tr>
+<tr><td><code>adminauth:</code></td><td>管理台口令失败</td><td>15 分钟</td><td>10</td></tr>
+</tbody>
+</table>
+</div>
+<p>为什么分开：Agent 忘了 key 和管理员忘了口令是两件事，不应该互相锁对方。一个计数器管所有，一个人试错会把全场锁掉。</p>
+<p><b>只计失败</b>（<code>lib/audit.js:149-171</code>）：成功请求一律先放行、成功后清零。早期版本把所有认证请求都计进去，结果正常用户半小时就被自己锁在门外，<code>npm test</code> 也会触发 429。</p>
+<p>调用方标识取 <code>X-Forwarded-For</code> 第一跳的 sha256 前 16 位（<code>lib/audit.js:125-131</code>），不落明文 IP。代理不传 XFF 时退回 <code>socket.remoteAddress</code>——在反代后面这个地址永远是代理自己，于是全体用户共享一个桶（详见<a href="runtime.html">环境自动识别</a>）。</p>
+
+<h2 id="register-gate">注册闸门与 master_code 放行</h2>
+<p>注册是公开接口（领钥匙的唯一入口），不能关掉，只能限速。但实例可以<b>关掉自助注册</b>（<code>open_register=0</code>），此时只有带对 <code>MOYI_CODE</code> 的请求才能进来（<code>lib/moyi.js:1114-1130</code>）——否则关掉注册等于把管理员自己锁在门外。</p>
+
+<h3>引导页 CAS</h3>
+<p>引导安装页用 <code>settings</code> 表里一行 <code>setup_locked</code> 做一次性写锁。PostgREST 的 <code>resolution=ignore-duplicates</code> 在行已存在时返回空 representation，据此判断「有人比我先按下了安装按钮」（<code>lib/console.js:199-209</code>）。两个人同时点安装，只有一个能写进去，另一个收到 409 并回滚刚建的管理员——绝不留下「建了管理员但没落锁」的中间态。</p>
+
+<h3 id="setup-unlock">setup_locked 删除即重开（高危）</h3>
+<div class="box stop">
+<p class="box-t">删掉 setup_locked 这一行就重新打开了安装入口</p>
+<p>任何能写库的人都能给自己造一个超管。所以这条要当作高危操作对待。恢复流程见 <code>SECURITY-MIGRATION.md</code>。</p>
+</div>
+
+<h2 id="global-memory">全局记忆：隐私边界不是权限边界</h2>
+<p>全局记忆打开后，读作用域扩到全库（<code>readFilter</code> 返回空，<code>lib/moyi.js:191-193</code>），但<b>写、去重合并、删除、衰减落库、访问计数</b>一律仍锁在自己的 <code>agent_id</code> 上（<code>lib/moyi.js:202</code>，<code>OWN_SCOPE</code>）。</p>
+
+<h3>403 vs 404 不对称</h3>
+<p>全局模式下 PATCH/DELETE 他人的记忆回 <b>403</b>（存在但你不能动）；严格模式下回 <b>404</b>（不存在）。这个不对称是刻意的：严格模式下做一次「无归属探测」会把状态码变成<b>跨 agent 的存在性探针</b>——攻击者猜一个 id，403 表示存在、404 表示不存在。全局模式下调用方本来就看得见这条记忆（读放宽），所以回 403 更诚实。（<code>lib/moyi.js:1498-1509</code>）</p>
+
+<h3>access_count 只涨自己</h3>
+<p>全局模式下 A 读 B 的记忆，<b>不代 B 记访问数</b>——否则 A 反复读 B 的记忆就等于 A 在给 B 的记忆续命，那是越权写（<code>lib/moyi.js:1492-1495</code>）。</p>
+
+<h2 id="settings">settings 白名单 + BOOTSTRAP_ONLY</h2>
+<p><code>PATCH /api/console/settings</code> 只接受白名单里的键（<code>lib/console.js:162</code>）：<code>instance_name</code>、<code>global_memory</code>、<code>open_register</code>。杜绝客户端写进任意配置。</p>
+<p><code>setup_locked</code> 属于 <code>BOOTSTRAP_ONLY</code>（<code>lib/console.js:164</code>）：引导安装阶段能改，之后锁死。避免把已经建好的实例改回未初始化状态。</p>
+
+<h3>numEnv 的 NaN 防护</h3>
+<p>多处环境变量走 <code>Number()</code> 解析。一旦变量设了但不是数字（<code>MOYI_W_VEC=0.7d</code>、半衰期手滑带上单位），<code>Number('0.7d')</code> 得 NaN，而 NaN 会把整条运算链染成 NaN——服务照常启动、日志一声不响、接口照回 200，只是所有相关性都废了。</p>
+<p><code>lib/numenv.js</code> 在解析层拦住：解析失败回默认值，同时 stderr 警告一次（<code>lib/numenv.js:40-55</code>）。</p>
+
+<h2 id="cors">CORS 默认白名单</h2>
+<p>白名单逻辑在 <code>lib/moyi.js:575-585</code>。请求不带 <code>Origin</code> 头时直接返回 <code>null</code>（同源请求本就不需要 CORS 头，浏览器不会拦），带了的只有下面这些放行：</p>
+<ul>
+<li><code>http://localhost:3906</code></li>
+<li><code>http://127.0.0.1:3906</code></li>
+<li><code>MOYI_ALLOWED_ORIGINS</code> 里显式列出的源（逗号分隔）</li>
+</ul>
+<p>设 <code>MOYI_ALLOWED_ORIGINS=*</code> 会放行任何源——任何网页都能在浏览器里拿用户的 key 打这个 API。生产环境务必显式列出可信源。</p>
+
+<h2 id="audit">审计 ring buffer 与脱敏</h2>
+<p>审计日志在进程内存里，环形缓冲，容量 <code>MOYI_AUDIT_CAPACITY</code>（默认 2000，<code>lib/audit.js:17</code>）。单条约 200B，最坏情况 &lt;1MB，不会因为长期运行而涨。</p>
+<p>写入前脱敏（<code>lib/audit.js:44-61</code>）：</p>
+<ul>
+<li>键名匹配 <code>SECRETISH</code> 正则（<code>api_key|token|secret|password|master_code|authorization</code>）→ 值替换为 <code>«redacted»</code></li>
+<li>值匹配 <code>moyi_[0-9a-f]{8,}</code> → 截断为 <code>moyi_xxx…(redacted)</code></li>
+</ul>
+
+<h3>内存态、重启即失的边界</h3>
+<p>刻意不落盘。墨忆要能在 Vercel 这类无状态函数环境里跑，落盘的日志在实例回收时就没了，写文件反而制造「以为有留痕」的错觉。真要做合规级留痕，应该往独立的 append-only 存储写。响应里固定带一句 <code>warning</code> 说明它是易失的（<code>lib/moyi.js:1402</code>）。</p>
+
+<h2 id="not-doing">它刻意不做什么</h2>
+<p>写清楚做不到的事，比列一堆待办更有用：</p>
+<div class="tw">
+<table>
+<thead><tr><th>功能</th><th>现状</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td>图形验证码</td><td><b>无</b></td><td>零依赖选型，不引入第三方验证码服务</td></tr>
+<tr><td>邮箱/短信通知</td><td><b>无</b></td><td>不依赖任何通知渠道</td></tr>
+<tr><td>第三方 OAuth</td><td><b>无</b></td><td>仅用户名+口令</td></tr>
+<tr><td>口令找回自助通道</td><td><b>无</b></td><td>忘了口令只能手工改库（见 <code>SECURITY-MIGRATION.md</code>）。一个能远程改管理员口令的接口本身就是最大的攻击面，刻意比「点个重置链接」麻烦</td></tr>
+<tr><td>IP 自动拉黑</td><td><b>无</b></td><td>仅限速（滑动窗口计数），无永久封禁。要可靠封禁请放反代或防火墙</td></tr>
+<tr><td>登录日志持久化</td><td><b>无</b></td><td>审计日志在进程内存，实例重启即失</td></tr>
+<tr><td>注销流程</td><td><b>无</b></td><td>Agent 只能由 master 或超管删除，管理员只能由超管删除</td></tr>
+</tbody>
+</table>
+</div>
+<p>这些是取舍而非遗漏。墨忆的定位是零依赖的记忆中间件，不是完整的用户管理系统。需要这些功能的话，请在反代层或外部网关补上。</p>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

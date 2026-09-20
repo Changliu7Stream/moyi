@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>环境自动识别 · 墨忆文档</title>
+<meta name="description" content="墨忆如何识别自己所处的运行环境：存储后端与路径前缀的推断规则、启动自检、/api/console/status 每个字段的真值表、请求级环境（X-Forwarded-Proto / For）、检索后端的自动降级。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">环境与部署 / Runtime Detection</p>
+<h1>环境自动识别</h1>
+<p class="lede">「我这个部署到底被墨忆认成了哪种环境？」——这一页回答的就是这个问题。墨忆的环境识别分布在六个层面：启动时算基址、启动自检、库侧状态、请求级头信息、检索后端、以及缺表时的降级梯度。每一层的判据、默认值、判错后的症状都列在下面。搞清这六层，绝大多数「起不来 / 打不通 / 静默失效」都能自己定位。</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>层面</th><th>识别什么</th><th>依据</th><th>判错的典型症状</th></tr></thead>
+<tbody>
+<tr><td><b>① 启动时</b></td><td>存储后端与路径前缀</td><td><code>MOYI_DB_URL</code> 主机名 + <code>MOYI_DB_BACKEND</code></td><td>全站 404 / 全站 500</td></tr>
+<tr><td><b>② 启动自检</b></td><td>关键凭据是否齐、能否当掌柜</td><td>变量是否<b>非空</b>（不校验格式）</td><td>横幅有 ⚠，或横幅干净却处处 500</td></tr>
+<tr><td><b>③ 运行期·库侧</b></td><td>表在不在、装过没有</td><td>HTTP 404 / 唯一冲突 409 / settings 缺表</td><td>引导页该出没出、该封不封</td></tr>
+<tr><td><b>④ 运行期·请求侧</b></td><td>这个请求走没走 HTTPS、来自哪个 IP</td><td><code>X-Forwarded-Proto</code> / <code>X-Forwarded-For</code></td><td>Cookie 丢 <code>Secure</code>、限速串成一桶</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="layer1">① 存储后端与路径前缀怎么推断</h2>
+<p>墨忆只依赖 PostgREST 协议，所以它不需要知道「数据库是什么」，只需要算出<b>一个能用的 REST 基址</b>。基址 = URL 去掉尾斜杠 + 推断出的前缀。前缀的推断是一条<b>有先后顺序</b>的四分支判断：</p>
+
+<pre><code>function inferPrefix(url):
+  1. MOYI_DB_PREFIX 已设置（哪怕设成空串）        → 直接用它，不再推断
+  2. URL 的 pathname 已以 /rest/v1 结尾           → 返回 ''（避免拼成 /rest/v1/rest/v1）
+  3. MOYI_DB_BACKEND == 'supabase'                → 返回 '/rest/v1'
+  4. URL 主机名匹配 /\.supabase\.(co|in)$/i        → '/rest/v1'，否则 → ''</code></pre>
+
+<p>三条要点值得单独强调：</p>
+<ul>
+<li><b>第 1 步判的是「有没有设置」，不是「值真不真」。</b>用 <code>!== undefined</code> 判断，所以 <code>MOYI_DB_PREFIX=</code>（显式空）会<b>关闭</b>推断并把前缀定为空。想强制无前缀就写空串，想让它自己推断就<b>别设</b>这个变量——这两种写法行为不同，很容易搞反。</li>
+<li><b>第 2 步是为了容错。</b>有人把 <code>SUPABASE_URL</code> 填成项目根，有人习惯连 <code>/rest/v1</code> 一起填。这一条让两种写法都能工作。</li>
+<li><b>第 4 步只认 <code>.co</code> 和 <code>.in</code>。</b>自建域名前置的 Supabase（CDN/自定义域）不会被认出来，此时要么设 <code>MOYI_DB_BACKEND=supabase</code>，要么直接写全 <code>MOYI_DB_PREFIX=/rest/v1</code>。</li>
+</ul>
+
+<div class="tw">
+<table>
+<thead><tr><th>你填的 URL</th><th>其它设置</th><th>推断出的前缀</th><th>最终打到的地址</th></tr></thead>
+<tbody>
+<tr><td><code>https://abc.supabase.co</code></td><td>—</td><td><code>/rest/v1</code></td><td><code>…supabase.co/rest/v1/memories</code></td></tr>
+<tr><td><code>https://abc.supabase.co/rest/v1</code></td><td>—</td><td><code>''</code>（命中第 2 步）</td><td><code>…/rest/v1/memories</code>（不重复）</td></tr>
+<tr><td><code>http://127.0.0.1:3000</code></td><td>—</td><td><code>''</code></td><td><code>http://127.0.0.1:3000/memories</code></td></tr>
+<tr><td><code>https://pg.my-cdn.com</code>（Supabase 套壳）</td><td><code>BACKEND=supabase</code></td><td><code>/rest/v1</code></td><td><code>…/rest/v1/memories</code></td></tr>
+<tr><td><code>https://api.example.com/db</code>（反代加了前缀）</td><td><code>DB_PREFIX=/db</code></td><td><code>/db</code>（强制）</td><td><code>…/db/memories</code></td></tr>
+<tr><td><code>127.0.0.1:3000</code>（漏了 scheme）</td><td>—</td><td><code>''</code></td><td><b>fetch 报非法 URL → 500</b></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="layer2">② 启动自检：它查什么、不查什么</h2>
+<p>服务启动时打印横幅。自检逻辑很浅——<b>只判断关键变量是否非空，绝不校验格式，也绝不真的连一次库</b>。这是有意的取舍：启动路径不该依赖网络可达性，否则凭据写错会导致容器反复重启而不是给出可读错误。</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>横幅输出</th><th>触发条件</th><th>该怎么办</th></tr></thead>
+<tbody>
+<tr><td><code>⚠ 缺少环境变量: MOYI_DB_URL</code></td><td><code>MOYI_DB_URL</code> 与 <code>SUPABASE_URL</code> <b>都为空</b>（提示哪个名字，取决于它认自己是哪种后端）</td><td>补第 1 组变量</td></tr>
+<tr><td><code>⚠ 缺少环境变量: MOYI_DB_TOKEN</code></td><td>三个 token 名（<code>MOYI_DB_TOKEN</code>/<code>SUPABASE_KEY</code>/<code>SUPABASE_ANON_KEY</code>）全为空</td><td>补 token；自托管填任意非空串也行</td></tr>
+<tr><td><code>ⓘ 未设置 MOYI_CODE，任何人都无法注册为 master（安全默认）</code></td><td><code>MOYI_CODE</code> 与 <code>MASTER_CODE</code> 都没设</td><td><b>这不是错误</b>。只有需要 master 管理能力时才设</td></tr>
+<tr><td><code>存储: Supabase（托管）</code> / <code>存储: PostgREST（自托管/兼容协议）</code></td><td>它自我认定的后端类型</td><td>若与你预期不符，回去看<a href="#layer1">①</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box warn">
+<p class="box-t">「横幅干净」不等于「配置对」</p>
+<p>自检不校验 URL 格式、不测连通性、不验 token 有效性。所以漏写 <code>http://</code>、主机名打错、token 填了已轮换的旧值——<b>横幅全绿，服务正常监听</b>，直到第一个真打库的请求才回 500。判断配置是否真的通了，用<a href="troubleshoot.html#commands">自查命令</a>里的 <code>curl /api/console/status</code> 看 <code>db_ready</code>，那才是实测结果。</p>
+</div>
+
+<h2 id="layer3">③ 库侧状态：/api/console/status 的每个字段</h2>
+<p>引导安装页就是靠这个<b>公开、免认证</b>的接口决定自己该不该出现。判定完全在服务端，前端藏不掉也绕不过。注意别和 <code>/api/status</code> 混——后者是 Agent 面的，要带 <code>X-Moyi-Key</code>。</p>
+
+<div class="tw">
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>怎么算出来的</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>needs_setup</code></td><td>bool</td><td><code>!表缺失 && !settings缺失 && !有管理员 && !已落锁</code></td><td>是否该展示引导页。<b>四个条件全满足才为真</b></td></tr>
+<tr><td><code>has_admins</code></td><td>bool</td><td><code>SELECT id FROM admins LIMIT 1</code> 有行</td><td>库里是否已有管理员</td></tr>
+<tr><td><code>db_ready</code></td><td>bool</td><td><code>!表缺失 && !settings缺失</code></td><td>迁移 SQL 跑过了吗</td></tr>
+<tr><td><code>setup_locked</code></td><td>bool</td><td><code>settings.setup_locked 为真 || has_admins</code></td><td>安装入口是否已永久封存。<b>注意它带 || has_admins</b>：有管理员就视为已锁，即使锁行丢了也拦得住重装</td></tr>
+<tr><td><code>instance_name</code></td><td>string</td><td>settings，缺省 <code>墨忆</code></td><td>实例显示名，最长 40 字符（超出截断）</td></tr>
+<tr><td><code>open_register</code></td><td>bool</td><td><code>settings.open_register === '1'</code></td><td>公开注册是否开着</td></tr>
+<tr><td><code>global_memory</code></td><td>bool</td><td><code>settings.global_memory === '1'</code></td><td>跨 Agent 只读可见是否开启</td></tr>
+<tr><td><code>authenticated</code></td><td>bool</td><td>会话 Cookie 是否有效</td><td>当前浏览器是否已登录</td></tr>
+<tr><td><code>role</code> / <code>username</code></td><td>string｜null</td><td>取自会话对应的管理员行</td><td>未登录时为 <code>null</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>真值表：为什么 needs_setup 要四个条件</h3>
+<p>关键在于「表还没建」和「装好了」这两件事<b>不能混淆</b>。若只看 <code>has_admins</code>，用户在没跑迁移 SQL 时会看到一个能提交、但必然失败的引导页，提交后得到一堆莫名其妙的错误。</p>
+<div class="tw">
+<table>
+<thead><tr><th>settings 表</th><th>admins 表</th><th>有管理员</th><th>已落锁</th><th><code>db_ready</code></th><th><code>needs_setup</code></th><th>这是什么处境</th></tr></thead>
+<tbody>
+<tr><td>缺</td><td>缺</td><td>否</td><td>否</td><td>false</td><td><b>false</b></td><td>没跑迁移 SQL。安装页<b>不该</b>出现</td></tr>
+<tr><td>缺</td><td>在</td><td>是</td><td>否</td><td>false</td><td><b>false</b></td><td>settings 表被删了；管理台降级但 Agent 功能照常</td></tr>
+<tr><td>在</td><td>在</td><td>否</td><td>否</td><td>true</td><td><b>true</b></td><td>干净的新实例，等人来装</td></tr>
+<tr><td>在</td><td>在</td><td>是</td><td>是</td><td>true</td><td><b>false</b></td><td>正常已安装（绝大多数情况）</td></tr>
+<tr><td>在</td><td>在</td><td>是</td><td>否</td><td>true</td><td><b>false</b></td><td>锁行被误删，但仍有管理员 → <code>setup_locked</code> 靠 <code>|| has_admins</code> 兜住</td></tr>
+<tr><td>在</td><td>在</td><td>否</td><td>是</td><td>true</td><td><b>false</b></td><td>⚠ 锁了但一个管理员都没有（管理员被删光、锁行还在）→ 安装口封死，只能手工恢复</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box stop">
+<p class="box-t">最后那一行是真实的运维风险</p>
+<p><code>setup_locked=1</code> 存在、但 <code>admins</code> 表被清空时，<code>needs_setup</code> 仍是 <code>false</code>：引导页不会重新出现，你也无法自助建管理员。恢复只能手工做（见<a href="troubleshoot.html#forgot-password">口令恢复</a>：先插一行 <code>role='super'</code> 的管理员再登录）。反过来说，<b>删掉 <code>setup_locked</code> 这一行就重新打开了安装入口</b>——任何能写库的人都能给自己造一个超管，所以这条要当作高危操作对待。</p>
+</div>
+
+<h3 id="cas">并发安装怎么抢：唯一冲突当 CAS</h3>
+<p>两个人同时打开引导页都点了安装，不能变出两个「首个超管」。落锁靠的是往 <code>settings</code> 插一行 <code>setup_locked</code>，而该表以 <code>key</code> 为主键：</p>
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>先探一次</b><span>读 settings，表缺失→409 提示先跑 SQL；已落锁→409 提示装过了</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>建管理员</b><span>username 唯一约束同样会 409</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>插锁行</b><span>POST settings；主键冲突回 <b>409</b> 即「有人比我先」</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">4</span><b>失败方回滚</b><span>删掉自己刚建的管理员，回 409「刚刚已被安装」</span></div>
+</div>
+<p>第 3、4 步是关键：<b>绝不留下「建了管理员但没落锁」的中间态</b>。另外安装者勾的选项（实例名、是否开放注册）用 upsert 写而非裸 POST——迁移 SQL 已经预插了 <code>instance_name</code>/<code>open_register</code> 两行，裸 POST 会撞 409 且因为 <code>return=minimal</code> 无人检查状态码，症状是<b>装完发现勾掉的选项静默丢失</b>。</p>
+
+<h2 id="layer4">④ 请求级环境：两个 Forwarded 头</h2>
+<p>墨忆自己不听 443，HTTPS 总是由反向代理终结。所以「这个请求是不是加密来的」「客户端真实 IP 是谁」只能从代理传进来的头里读。</p>
+
+<h3>X-Forwarded-Proto → 会话 Cookie 的 Secure</h3>
+<pre><code>const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+const secure = proto === 'https' ? '; Secure' : '';
+// moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=…[; Secure]</code></pre>
+<p>代理链可能把多级 hop 拼成 <code>x-forwarded-proto: https, http</code>，所以取<b>第一段</b>（最外层、用户实际看到的协议）。</p>
+<div class="box warn">
+<p class="box-t">代理不传这个头 → Cookie 永远不带 Secure</p>
+<p>后果是明文链路上会话 token 可被嗅探重放。<b>自查</b>：登录后看响应头 <code>Set-Cookie</code> 末尾有没有 <code>; Secure</code>。没有就说明代理没正确传 <code>X-Forwarded-Proto</code>，或你本来就在用 http 访问。配置见<a href="https.html">HTTPS 与反向代理</a>。</p>
+<p>反过来，客户端伪造 <code>X-Forwarded-Proto: https</code> 并不会造成安全漏洞——最坏是他自己拿到一个 http 下发不出去的 Cookie。</p>
+</div>
+
+<h3>X-Forwarded-For → 限速的 key 来源</h3>
+<pre><code>const xff = req.headers['x-forwarded-for'];
+const ip = (typeof xff === 'string' ? xff.split(',')[0].trim() : '')
+        || (req.socket && req.socket.remoteAddress) || 'unknown';
+return sha256(ip).slice(0, 16);   // 不落明文 IP</code></pre>
+<p>限速按这个哈希值分桶：注册限速、Agent 认证失败、管理台口令失败各用独立前缀（<code>reg:h:</code>、<code>reg:d:</code>、<code>auth:</code>、<code>adminauth:</code>），互不顶掉配额。</p>
+<div class="box stop">
+<p class="box-t">代理不传 XFF 时，所有用户共享同一个限速桶</p>
+<p>没有 <code>X-Forwarded-For</code> 就退回 <code>socket.remoteAddress</code>——而在反向代理后面，<b>这个地址永远是代理自己</b>。于是「每小时 10 次注册」变成「<b>全体用户加起来</b>每小时 10 次」：第 11 个人什么也没干就拿 429。多用户部署务必让代理传真实客户端 IP（Nginx <code>proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;</code>）。</p>
+<p>另一面也要清楚：XFF 由客户端可控时，攻击者每次换个假 IP 就能绕开限速。所以这层只是<b>提高成本的软防线</b>，真正的暴破拦截应放在代理层或防火墙。</p>
+</div>
+
+<h2 id="layer5">⑤ 检索后端的自动识别与降级</h2>
+<p>墨忆能在两种检索实现间切换，并在响应里<b>如实标注用的哪条路</b>，不让你猜：</p>
+<div class="tw">
+<table>
+<thead><tr><th><code>search_backend</code></th><th>含义</th><th>条件</th></tr></thead>
+<tbody>
+<tr><td><code>pgvector</code></td><td>DB 端近邻召回（走 <code>match_memories()</code> + HNSW）</td><td><code>MOYI_DB_SEARCH=1</code> 且 RPC 调用成功</td></tr>
+<tr><td><code>scan</code></td><td>服务层暴力扫描（拉 ≤<code>MOYI_SCAN_LIMIT</code> 条在内存算）</td><td>默认；或下推被关；或 RPC 不可用而自动回退</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">熔断是进程级且不复位</p>
+<p>RPC 第一次返回 404/400 就把 <code>rpcUnavailable</code> 置真，之后<b>本进程不再尝试下推</b>（免得每条查询都去撞一次 404）。所以：<b>补建了 <code>match_memories</code> 函数后，必须重启墨忆进程</b>，光改 <code>MOYI_DB_SEARCH=1</code> 不够——旧进程还记着「RPC 不可用」。</p>
+</div>
+
+<h2 id="degrade">⑥ 表缺失时的降级梯度</h2>
+<p>PostgREST 对未知关系回 <b>404 + code <code>42P01</code></b>。墨忆把这种「表不存在」和「查询结果为空」严格区分开，并逐层降级，而不是笼统报错：</p>
+<div class="tw">
+<table>
+<thead><tr><th>缺失的表</th><th>识别到的状态</th><th>行为</th></tr></thead>
+<tbody>
+<tr><td><code>settings</code></td><td><code>settingsMissing=true</code></td><td>用默认设置继续跑；管理台与全局记忆不可用；stderr 只<b>警告一次</b>；<code>db_ready:false</code>、<code>needs_setup:false</code>；Agent 侧功能不受影响</td></tr>
+<tr><td><code>admins</code></td><td><code>tableMissing</code>（本请求内判定）</td><td>登录/安装回 <b>409</b> 并明确提示「跑 <code>sql/00-schema.sql</code>，Supabase 再补 <code>sql/vector-search.sql</code>」，而不是报一个看不懂的错</td></tr>
+<tr><td>两者都缺</td><td>—</td><td><code>db_ready:false</code>；安装请求直接 409 并说明缺 <code>settings</code>，且<b>不会留下半成品管理员</b></td></tr>
+<tr><td><code>match_memories</code> 函数</td><td>进程级熔断</td><td>检索永久回退 scan（直到重启），响应里 <code>search_backend</code> 仍是诚实的 <code>scan</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>设计取向是：<b>宁可少给一个功能，也不要给一个看起来能用、提交后必然失败的界面</b>。缺表是可修的部署问题，不该伪装成运行时错误。</p>
+
+<h2 id="tree">「我这是哪种环境」决策树</h2>
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>URL 主机名里有 supabase.co/.in？</b><span>有 → 云路线，前缀自动加 <code>/rest/v1</code>，跑 <code>sql/00-schema.sql</code> + <code>sql/vector-search.sql</code></span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>没有 supabase 域名，那 PostgREST 是自己的吗？</b><span>是 → 自托管全栈，跑 <code>sql/00-schema.sql</code> + <code>docker/init/10-roles.sql</code></span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>都不是，走托管平台（Vercel）？</b><span>凭据进平台环境变量；限速/审计退化为每实例独立</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">4</span><b>curl /api/console/status 复核</b><span>看 <code>db_ready</code> 与 <code>needs_setup</code>，这是实测而非猜测</span></div>
+</div>
+<div class="box ok">
+<p class="box-t">一个原则</p>
+<p>任何时候怀疑环境判断有问题，<b>先看 <code>/api/console/status</code> 的输出</b>。它把墨忆眼里的那个世界讲清楚了：库通不通、装没装过、有没有登录、三个开关各是什么状态。这比读日志或猜配置快得多。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>十分钟跑通 · 墨忆文档</title>
+<meta name="description" content="三条部署路径（Docker 自托管 / Docker 连 Supabase / 裸 Node）从零到能存第一条记忆的最短命令序列。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">开始 / Quickstart</p>
+<h1>十分钟跑通</h1>
+<p class="lede">三条路径，每条都从「机器上什么都没装」走到「能存第一条记忆」。挑一条跟到底就行，不要混着来。</p>
+
+<div class="cards">
+<a class="card" href="#selfhost"><b>A · Docker 自托管全栈</b><span>Postgres + PostgREST + 墨忆，数据在自己手里。</span></a>
+<a class="card" href="#cloud"><b>B · Docker 连 Supabase</b><span>只起墨忆一个容器，数据库托管。</span></a>
+<a class="card" href="#node"><b>C · 裸跑 Node</b><span>不装 Docker，直接 node server.js。</span></a>
+</div>
+
+<p>三条路径最后都会落到同一个地方：浏览器打开 <code>/console</code>，第一次访问会进<b>引导安装页</b>——立第一位管理员，这一步只出现一次，落库后引导页永久封存（详见 <a href="deploy.html">部署详解</a>）。</p>
+
+<h2 id="selfhost">A · Docker 自托管全栈</h2>
+<p>前提：已装 Docker 与 Docker Compose v2。整条栈由三个容器组成——Postgres（带 pgvector）、PostgREST、墨忆。数据卷 <code>pgdata</code> 第一次起容器时由镜像初始化脚本建表，之后重启不会重跑。</p>
+
+<pre><code><span class="c"># 1. 拷一份配置模板，至少填 MOYI_PG_PASSWORD 与 MOYI_CODE</span>
+cp .env.example .env
+
+<span class="c"># 2. 起栈（--profile local 选本地栈）</span>
+docker compose --profile local up -d --build
+
+<span class="c"># 3. 等 postgres 健康检查过（约 10–20 秒）</span>
+docker compose ps</code></pre>
+
+<p>预期 <code>docker compose ps</code> 里 <code>postgres</code> 状态为 <code>healthy</code>，<code>postgrest</code> 与 <code>moyi-local</code> 为 <code>running</code>。</p>
+
+<p>验证服务起来了：</p>
+
+<pre><code>curl -s http://localhost:3906/status | head -c 200
+<span class="c"># 期望返回 {"ok":true,...} 或类似 200 响应；404 也算服务活着</span>
+
+curl -s http://localhost:3906/api/console/status
+<span class="c"># 期望 {"needs_setup":true,"db_ready":true,...}</span></code></pre>
+
+<p>首次访问 <code>http://localhost:3906/console</code> 会进引导安装页。填完管理员用户名与口令后，立刻在面板里创建一个 Agent，面板会<b>一次性</b>显示 API Key（关掉就看不到了，只能再「重置密钥」）。</p>
+
+<p>拿 Key 写第一条记忆：</p>
+
+<pre><code>curl -X POST http://localhost:3906/api/memories \
+  -H "X-Moyi-Key: moyi_xxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"我的生日是 3 月 8 日","importance":"high"}'
+<span class="c"># 期望 201，返回里带 id、embedding、created_at</span>
+
+curl -X POST http://localhost:3906/api/memories/search \
+  -H "X-Moyi-Key: moyi_xxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"生日"}'
+<span class="c"># 期望 results 数组里能看到刚才那条，search_backend 默认是 "scan"</span></code></pre>
+
+<p>如果想打开数据库端近邻检索，把 <code>MOYI_DB_SEARCH=1</code> 加进 <code>data/moyi-env/moyi.env</code> 并重启墨忆容器。但<b>先回填历史向量</b>——下推路径只覆盖已有向量的行，详见 <a href="troubleshoot.html#search-scan">故障排查</a>。</p>
+
+<h2 id="cloud">B · Docker 连 Supabase</h2>
+<p>前提：已有 Supabase 项目，且已经在 SQL Editor 里<b>按顺序</b>执行过 <code>sql/00-schema.sql</code> 与 <code>sql/vector-search.sql</code>（前者建表，后者开 RLS 且只放行 service_role，详见 <a href="deploy.html#supabase">部署详解</a>）。</p>
+
+<pre><code><span class="c"># 1. 准备挂载目录，凭据只能从这里读</span>
+mkdir -p data/moyi-env
+cat &gt; data/moyi-env/moyi.env &lt;&lt;'EOF'
+MOYI_DB_BACKEND=supabase
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_KEY=&lt;service_role key，不是 anon key&gt;
+MOYI_CODE=&lt;你自己想的长随机串&gt;
+EOF
+chmod 600 data/moyi-env/moyi.env
+
+<span class="c"># 2. 起栈</span>
+docker compose --profile cloud up -d --build</code></pre>
+
+<p>验证：</p>
+
+<pre><code>curl -s http://localhost:3906/api/console/status
+<span class="c"># db_ready:true, needs_setup:true</span></code></pre>
+
+<p>后续步骤（引导安装、创建 Agent、写第一条记忆）与 A 完全一致。</p>
+
+<div class="box warn">
+<p class="box-t">不要把 anon key 配到服务端</p>
+<p><code>sql/vector-search.sql</code> 的 RLS 策略只放行 service_role。把 anon key 配到 <code>SUPABASE_KEY</code>，服务层会把空数组当成「没有记忆」——数据凭空消失且不报错。这是本项目最常见的错误配置。</p>
+</div>
+
+<h2 id="node">C · 裸跑 Node</h2>
+<p>前提：Node ≥ 18。零运行时依赖，<code>npm install</code> 都不需要。</p>
+
+<pre><code><span class="c"># 1. 拷配置并填写</span>
+cp .env.example .env.local
+<span class="c"># 自托管：MOYI_DB_URL / MOYI_DB_TOKEN / MOYI_CODE</span>
+<span class="c"># Supabase：MOYI_DB_BACKEND=supabase + SUPABASE_URL / SUPABASE_KEY / MOYI_CODE</span>
+
+<span class="c"># 2. 初始化数据库（二选一）</span>
+<span class="c">#   Supabase：后台 → SQL Editor → 依次执行 sql/00-schema.sql 再 sql/vector-search.sql</span>
+<span class="c">#   自托管：psql -d moyi -f sql/00-schema.sql &amp;&amp; psql -d moyi -f docker/init/10-roles.sql</span>
+
+<span class="c"># 3. 启动</span>
+node server.js</code></pre>
+
+<p>启动横幅会告诉你缺什么：</p>
+
+<pre><code>  墨忆 v3.3  Agent Memory Layer
+  ────────────────────────────
+  服务: http://localhost:3906
+  管理台: http://localhost:3906/console（首次访问会进入引导安装，装完即封存）
+  存储: PostgREST（自托管/兼容协议）
+  状态: 运行中</code></pre>
+
+<p>如果看到 <code>⚠ 缺少环境变量: MOYI_DB_URL</code>，所有 API 都会 500，先解决这个。如果看到 <code>ⓘ 未设置 MOYI_CODE，任何人都无法注册为 master</code>，服务能跑但没人能当掌柜——详见 <a href="troubleshoot.html#banner">故障排查</a>。</p>
+
+<p>验证与写入同 A。端口用 <code>MOYI_PORT</code> 改，绑定地址用 <code>MOYI_HOST</code> 改（默认 <code>0.0.0.0</code>）。</p>
+
+<h2>下一步</h2>
+<p>跑通之后，通常会接着做三件事：</p>
+<ul>
+<li>把墨忆挂到反向代理后面，强制 HTTPS——<a href="https.html">HTTPS 与反向代理</a> 把 <code>X-Forwarded-Proto</code> 为什么必须传讲透了。</li>
+<li>接 embedding provider，让「语义检索」名副其实——<code>MOYI_EMBED_URL</code> + <code>MOYI_EMBED_KEY</code>，接完<b>必须回填</b>一次历史记忆。</li>
+<li>让 Claude / Cursor 这类 MCP 客户端连上来：<code>mcp-server.js</code> 用 stdio 协议，配置片段在管理台创建 Agent 时直接给。</li>
+</ul>
+
+<p>卡住了去 <a href="troubleshoot.html">故障排查</a>，按症状查。</p>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>
