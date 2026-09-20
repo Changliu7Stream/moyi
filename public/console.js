@@ -238,7 +238,7 @@ function loadSettings() {
     });
     $('stBtn').disabled = !d.can_manage;
     $('stBody').classList.remove('hidden');
-    say($('stLocked'), d.db_ready ? '' : '未找到 settings 表：请先执行迁移 SQL（sql/00-schema.sql 或 sql/vector-search.sql）后重启。', false);
+    say($('stLocked'), d.db_ready ? '' : '未找到 settings 表：请先执行 sql/00-schema.sql（Supabase 还要执行 sql/vector-search.sql）后重启。', false);
     $('stLocked').classList.toggle('hidden', !!d.db_ready);
   }).catch(function (e) { say($('stLocked'), e.message, true); });
 }

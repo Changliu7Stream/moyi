@@ -98,6 +98,8 @@ Docker：写进挂载的 env 目录，**不要**写进 compose 的 `environment`
 ### 第 3 步 · 跑迁移 SQL
 
 - **Supabase** → SQL Editor 粘贴执行 `sql/vector-search.sql`
+  （本文面向已有 `agents`/`memories` 的旧库；**全新 Supabase 库要先跑 `sql/00-schema.sql`**，
+  否则第 18 行 `ALTER TABLE public.agents` 会报 `relation does not exist`）
 - **自托管** → `psql -d moyi -f sql/00-schema.sql && psql -d moyi -f docker/init/10-roles.sql`
   （用 `docker compose --profile local` 时自动完成）
 
