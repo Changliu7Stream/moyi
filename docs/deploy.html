@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>三条部署路径 · 墨忆文档</title>
-<meta name="description" content="Supabase / 自托管全栈 / Vercel Serverless 三种部署路径的细节差异：SQL 怎么选、compose profile 为什么互斥、Vercel 上限速退化的真实原因。">
+<title>部署路径 · 墨忆文档</title>
+<meta name="description" content="Supabase / 自托管全栈 / Vercel Serverless / Cloudflare Workers-Pages 四种部署路径的细节差异：SQL 怎么选、compose profile 为什么互斥、无状态平台上限速退化的真实原因，以及 Cloudflare 仅付费版的原因。">
 <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
 <div class="d-wrap">
 <main>
 <p class="crumb">部署 / Deploy</p>
-<h1>三条部署路径</h1>
-<p class="lede">墨忆只认识 PostgREST 协议，所以「数据库在哪」这件事可以换。三条路径的代码是同一份，差异全在 SQL 怎么跑、凭据从哪来、进程模型是长驻还是无状态。</p>
+<h1>四条部署路径</h1>
+<p class="lede">墨忆只认识 PostgREST 协议，所以「数据库在哪」这件事可以换；本体又是一个纯 Node 服务，所以「进程跑在哪」也能换。四条路径（Supabase / 自托管 / Vercel / Cloudflare）的<b>业务代码是同一份</b>，差异全在 SQL 怎么跑、凭据从哪来、进程模型是长驻还是无状态。新手请先看 <a href="beginner.html">部署前必看</a>。</p>
 
 <h2 id="supabase">连外部 Supabase</h2>
 
@@ -99,28 +99,84 @@ sql/vector-search.sql    <span class="c">-- 2. 开 RLS、补控制台相关表�
 </div>
 <p>可选：<code>MOYI_EMBED_URL</code> / <code>MOYI_EMBED_KEY</code> 接 embedding provider，<code>MOYI_ALLOWED_ORIGINS</code> 配 CORS 白名单。</p>
 
+<h2 id="cloudflare">Cloudflare Workers / Pages Functions</h2>
+<div class="box warn">
+<p class="box-t">先说边界：代码路径已实现并本地测试，但仅限 Cloudflare <b>付费版</b></p>
+<p>墨忆的口令哈希用 scrypt（<code>N=16384</code>），本机实测单次约 70–105ms CPU。Workers 免费版每次调用 CPU 上限仅 <b>10ms</b>，登录/注册会直接 <code>Error 1102</code>。付费版默认 30s 才够跑。这条硬约束来自平台本身，改不掉；真要省这笔钱，请回 Vercel 或自托管。另：本仓库的这套适配<b>未在真实 Cloudflare 环境跑过端到端</b>（沙箱里没有 CF 账号），下列命令与文件是可直接部署的产物，但你的首次上线请自行验证。<a href="database.html#matrix">环境支持矩阵</a>。</p>
+</div>
+
+<h3>它是怎么跑起来的：Web ⇄ Node 适配层</h3>
+<p>Workers 没有 Node 的 <code>http.IncomingMessage</code>/<code>ServerResponse</code>，只有 Web 标准的 <code>Request</code>/<code>Response</code>。好在墨忆所有 API 早已收敛到 <code>lib/moyi.js</code> 的 <code>route(req, res, pathname, url)</code>，且它只用到 req/res 的极小子集（<code>method</code>/<code>url</code>/<code>headers</code>/<code>on('data'|'end')</code>/<code>destroy</code> 与 <code>writeHead</code>/<code>end</code>）。<code>lib/webadapter.js</code> 把这两端缝合起来，<b>业务代码一行不改</b>。涉及四个新文件：</p>
+<div class="tw">
+<table>
+<thead><tr><th>文件</th><th>角色</th></tr></thead>
+<tbody>
+<tr><td><code>lib/webadapter.js</code></td><td>Web Request/Response ⇄ Node req/res 翻译；预读 body 后用 <code>newListener</code> 补发给 <code>parseBody</code></td></tr>
+<tr><td><code>lib/webentry.js</code></td><td>把平台 env 拷进 <code>process.env</code> 后<b>再惰性 require</b> moyi，导出 <code>serveRequest(request, env)</code></td></tr>
+<tr><td><code>cloudflare/worker.js</code></td><td>Workers 入口（纯后端 <code>/api</code>），<code>fetch</code> 里调 <code>serveRequest</code></td></tr>
+<tr><td><code>cloudflare/functions/api/[[path]].js</code></td><td>Pages Functions 示例路由（<code>/api/*</code> 与静态前端同源）</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box info">
+<p class="box-t">为什么必须「先拷 env 再 require」（一个会 100% 500 的坑）</p>
+<p><code>lib/moyi.js</code> 有几个<b>模块加载时</b>就读死的顶层常量（<code>SUPA_URL</code>、<code>BACKEND</code>、<code>MASTER_CODE</code>、<code>SETTINGS_TTL</code>）。Node 里 <code>.env.local</code> 在启动前就进了 <code>process.env</code>，没问题；但 Workers/Pages 的变量是<b>每次调用</b>通过 <code>env</code> 参数传进来的，顶层一 import 就固化成空值，于是每个请求都「服务端未配置」500。解法就是 <code>webentry.js</code> 里那句：<b>先 await 把 env 拷进 process.env，之后才 <code>require('./moyi.js')</code></b>。<code>test/webentry.js</code> 用一个干净子进程专门锁住这条时序。</p>
+</div>
+
+<div class="box info">
+<p class="box-t">Cloudflare 的真实 IP：cf-connecting-ip</p>
+<p>墨忆的限速/审计统一取 <code>x-forwarded-for</code> 的第一跳。但 Cloudflare 传真实来源 IP 用的是 <code>cf-connecting-ip</code>。适配层里做了归一化：<b>没有 XFF 时，把 cf-connecting-ip 写进 x-forwarded-for</b>，于是 <code>lib/audit.js</code> 的 <code>clientKey()</code> 原样生效，核心代码不为 Cloudflare 特判。<code>test/webadapter.js</code> 覆盖了「归一化」和「已有 XFF 不被覆盖」两条。</p>
+</div>
+
+<h3>部署：Workers 路线</h3>
+<pre><code><span class="c"># 装 wrangler 并登录</span>
+npm i -g wrangler
+wrangler login
+
+<span class="c"># 敏感值用 secret，别写进 wrangler.toml（会被提交进仓库）</span>
+wrangler secret put MOYI_DB_URL       <span class="c"># https://xxxx.supabase.co</span>
+wrangler secret put MOYI_DB_TOKEN      <span class="c"># service_role key</span>
+wrangler secret put MOYI_CODE          <span class="c"># 若需开放 master 注册</span>
+
+<span class="c"># 部署（入口与 nodejs_compat 已在 wrangler.toml 配好）</span>
+wrangler deploy</code></pre>
+<p><code>wrangler.toml</code> 关键三行：<code>main = "cloudflare/worker.js"</code>、<code>compatibility_flags = ["nodejs_compat"]</code>（墨忆用到 <code>events</code>/<code>crypto</code>/<code>buffer</code> 这些 Node 内置模块）、<code>[vars]</code> 只放非敏感默认值。</p>
+
+<h3>部署：Pages Functions 路线</h3>
+<p>想让墨忆 API 和你自己的前端<b>同源</b>（省掉 CORS），把仓库里的 <code>cloudflare/functions/</code> 拷进你的 Pages 项目根，Pages 会按「文件即路由」把 <code>functions/api/[[path]].js</code> 挂到 <code>/api/*</code>。同样要开 <code>nodejs_compat</code>、配同样的变量/Secrets。</p>
+<div class="box stop">
+<p class="box-t">Pages 静态部分不跑墨忆</p>
+<p>Pages 托管静态文件，<b>墨忆这个 Node 服务只能跑在 Pages Functions / Workers 上</b>。只把仓库丢进 Pages 静态托管会得到一堆 404——那跟这份文档站放 GitHub Pages 是两回事（见 <a href="pages.html">Pages 部署</a>）。GitHub Pages、Cloudflare Pages 的静态侧都<b>跑不了</b>墨忆本体。</p>
+</div>
+
+<h3>退化和 Vercel 一样，甚至更明显</h3>
+<p>限速计数器（<code>lib/audit.js</code> 的 <code>windows</code> Map）和审计环形缓冲都在<b>进程内存</b>里。Workers 是全球多 isolate、随时冷启回收，每个 isolate 各记各的——暴破拦截只是部分防线，审计不能当合规留痕。需要可靠限速，请用反向代理或 Docker 长驻进程。</p>
+
 <h2 id="choose">选择建议</h2>
-<p>三条路线没有绝对的好坏，只有适不适合。几个典型场景：</p>
+<p>四条路线没有绝对的好坏，只有适不适合。几个典型场景：</p>
 <ul>
 <li><b>个人开发者，想快速跑起来试试</b>：Supabase 路线。五分钟能注册项目、跑 SQL、起容器，不用管数据库备份和升级。限速在单实例下够用。</li>
 <li><b>小团队内部用，数据敏感</b>：自托管路线。数据完全在自己手里，Postgres 可以做定期备份、审计日志可以接外部系统。运维成本高一些，但可控。</li>
 <li><b>Demo 或低频个人用</b>：Vercel 路线。零运维，自动 HTTPS，但限速和审计在多实例下基本失效。如果你的 Agent 一天只调几十次 API，问题不大。</li>
+<li><b>已经在用 Cloudflare、且接受付费版</b>：Workers/Pages 路线。零运维、全球边缘、免费额度只够静态；跑墨忆必须付费版（scrypt CPU）。限速/审计退化同 Vercel。</li>
 <li><b>生产环境，多用户</b>：自托管或 Supabase + 反向代理。Vercel 的限速退化在这种场景下是真实的安全风险——攻击者可以分散请求绕过每实例的计数。</li>
 </ul>
 <p>一个常见的误区是「先用 Vercel 跑起来，以后迁移到自托管」。迁移本身不难（环境变量改一下就行），但<a href="troubleshoot.html#needs-embedding">向量回填</a>和<a href="troubleshoot.html#search-scan">检索后端切换</a>需要手工操作，不是无缝的。如果一开始就知道要上生产，直接选自托管或 Supabase 路线更省事。</p>
 
-<h2 id="compare">三种路径对比</h2>
+<h2 id="compare">四种路径对比</h2>
 <div class="tw">
 <table>
-<thead><tr><th></th><th>Supabase（Docker / 裸 Node）</th><th>自托管全栈</th><th>Vercel Serverless</th></tr></thead>
+<thead><tr><th></th><th>Supabase（Docker / 裸 Node）</th><th>自托管全栈</th><th>Vercel Serverless</th><th>Cloudflare Workers/Pages</th></tr></thead>
 <tbody>
-<tr><td><b>数据掌控</b></td><td>托管在 Supabase，可随时导出</td><td>完全在自己手里</td><td>仍依赖 Supabase（或兼容后端）</td></tr>
-<tr><td><b>运维成本</b></td><td>低——不管数据库</td><td>高——自己备份、升级、监控</td><td>最低——免运维</td></tr>
-<tr><td><b>限速是否有效</b></td><td>有效（单长驻进程）</td><td>有效（单长驻进程）</td><td><b>每实例独立</b>，多实例下可绕过</td></tr>
-<tr><td><b>审计是否可用</b></td><td>进程内存，重启即失</td><td>进程内存，重启即失</td><td>同左，且实例回收更频繁</td></tr>
-<tr><td><b>是否需要自己搞 HTTPS</b></td><td>是——裸 Node 或 Docker 都需要反代</td><td>是</td><td>否——Vercel 自带</td></tr>
-<tr><td><b>管理台可用？</b></td><td>可用（会话在库里）</td><td>可用</td><td>可用</td></tr>
-<tr><td><b>适合场景</b></td><td>个人 / 小团队，想快速上线</td><td>对数据主权有要求</td><td>个人低频用、Demo</td></tr>
+<tr><td><b>数据掌控</b></td><td>托管在 Supabase，可随时导出</td><td>完全在自己手里</td><td>仍依赖 Supabase（或兼容后端）</td><td>同 Vercel，依赖外部 PostgREST</td></tr>
+<tr><td><b>运维成本</b></td><td>低——不管数据库</td><td>高——自己备份、升级、监控</td><td>最低——免运维</td><td>最低——免运维</td></tr>
+<tr><td><b>限速是否有效</b></td><td>有效（单长驻进程）</td><td>有效（单长驻进程）</td><td><b>每实例独立</b>，多实例下可绕过</td><td><b>每 isolate 独立</b>，冷隔离更频繁</td></tr>
+<tr><td><b>审计是否可用</b></td><td>进程内存，重启即失</td><td>进程内存，重启即失</td><td>同左，且实例回收更频繁</td><td>同 Vercel，isolate 随时回收</td></tr>
+<tr><td><b>是否需要自己搞 HTTPS</b></td><td>是——裸 Node 或 Docker 都需要反代</td><td>是</td><td>否——Vercel 自带</td><td>否——Cloudflare 自带</td></tr>
+<tr><td><b>能免费跑吗</b></td><td>服务能；数据库用 Supabase 免费额度</td><td>取决于你的机器</td><td>能（低频）</td><td><b>不能</b>——scrypt 超免费 10ms CPU，须付费版</td></tr>
+<tr><td><b>管理台可用？</b></td><td>可用（会话在库里）</td><td>可用</td><td>可用</td><td>可用（会话在库里）</td></tr>
+<tr><td><b>适合场景</b></td><td>个人 / 小团队，想快速上线</td><td>对数据主权有要求</td><td>个人低频用、Demo</td><td>已在用 CF 且接受付费、要边缘低延迟</td></tr>
 </tbody>
 </table>
 </div>

@@ -6,8 +6,8 @@ AI 记忆中间层。基于 MCP 协议，让任何 AI 工具共享同一套记�
 
 换工具，不丢记忆。换存储后端（Supabase ↔ 自托管 Postgres），也不用改代码。
 
-详细文档在 [`docs/`](./docs/)（源码目录，14 页）——部署、环境变量逐条解释、环境自动识别的判定规则、
-接口清单、数据库结构、安全机制，以及一页「对照：网站账号体系」。**已开 GitHub Pages 的话**，
+详细文档在 [`docs/`](./docs/)（源码目录，16 页）——新手「部署前必看」、部署、环境变量逐条解释与必须性分档、环境自动识别的判定规则、
+数据库与环境支持、接口清单、数据库结构、安全机制，以及一页「对照：网站账号体系」。**已开 GitHub Pages 的话**，
 同一套内容在线：<https://changliu7stream.github.io/moyi/>。
 
 开启方法（一次性，仓库 → Settings → Pages）：**Source** 选 `Deploy from a branch`，
@@ -67,7 +67,7 @@ AI 记忆中间层。基于 MCP 协议，让任何 AI 工具共享同一套记�
 | Embedding | 可插拔 provider，缺省本地特征哈希 | 见「向量检索」 |
 | MCP Server | Node.js + stdio | 标准 MCP 协议，http/https 均可 |
 | 前端 | 纯 HTML/CSS/JS | 水墨风，零框架，含力导向记忆图谱 |
-| 部署 | Docker Compose / Vercel Serverless / 直接 `node` | `api/index.js` 为 Serverless 入口 |
+| 部署 | Docker Compose / Vercel Serverless / Cloudflare Workers·Pages / 直接 `node` | `api/index.js` 为 Serverless 入口；`cloudflare/worker.js` 为 CF 入口（**仅付费版**，见下） |
 
 ---
 
@@ -586,7 +586,7 @@ npm test
 ```
 
 跑在内存版 PostgREST mock 上，**不触碰任何真实数据库**。
-去重判据 10 项 + 集成 213 项，覆盖：认证提权与后门回归、agent 隔离、入参校验、CORS、
+去重判据 10 项 + 集成 213 项，另有 `test/webadapter.js`（Web⇄Node 适配层契约：headers 小写、body 事件补发、OPTIONS 204、cf-connecting-ip 归一化、Set-Cookie 多条、1MB 上限）与 `test/webentry.js`（Cloudflare 入口「先拷 env 再 require」的时序，防止线上全场 500）覆盖 Cloudflare 路径，覆盖：认证提权与后门回归、agent 隔离、入参校验、CORS、
 向量检索与回填、语义去重、MCP 端到端、图谱构边与阈值、衰减数学（含降级可达性）、
 审计脱敏与限速（含「不带 key 不计失败」这类反例）、检索下推与回退、`resolveRest` 前缀推断、
 存储层故障显式报错，以及管理台一整段：引导安装的一次性（含重复安装不破锁）、CSRF 头、
@@ -605,6 +605,7 @@ npm test
 | Docker（自托管全栈） | `docker compose --profile local up -d --build` | Postgres + pgvector + PostgREST + 墨忆 |
 | Docker（连外部 Supabase） | `docker compose --profile cloud up -d --build` | 只起墨忆一个容器 |
 | Vercel Serverless | `api/index.js` + `vercel.json` | 项目环境变量按上表配置 |
+| Cloudflare Workers / Pages | `cloudflare/worker.js` + `wrangler.toml`（示例函数 `cloudflare/functions/`） | **仅付费版**：scrypt 单次约几十毫秒 CPU，免费版 10ms 上限会掐断登录/注册。业务代码经 `lib/webadapter.js` 零改动复用 |
 | 裸进程 | `node server.js` | Node ≥ 18，零运行时依赖 |
 
 镜像细节：`node:20-alpine`，只 COPY 运行所需文件；非 root 用户 `moyi`；`EXPOSE 3906`；
@@ -646,6 +647,9 @@ HEALTHCHECK 用 busybox `wget --spider` 探根路径（管理页能返回即算�
   一旦把它暴露到公网，等于全库公开。
 - **Vercel 部署下限速与审计基本无效**：无状态多实例各自计数。要限速请放反代
   或单长驻进程（Docker 那条路）。
+- **Cloudflare Workers / Pages 仅付费版可用**：scrypt 单次约几十毫秒 CPU，
+  免费版 10ms 上限会掐断登录/注册（`Error 1102`）。代码路径已实现并本地测试，
+  但尚未在 Cloudflare 真实环境跑过端到端。限速与审计的退化与 Vercel 同理。
 
 ---
 

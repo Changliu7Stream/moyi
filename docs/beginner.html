@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>部署前必看 · 墨忆文档</title>
+<meta name="description" content="给第一次部署墨忆的人：先看懂要准备什么、平台怎么选、数据库只有 PostgreSQL+pgvector 一种，以及最少只需配哪几个变量就能跑起来。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">开始 / Before You Deploy</p>
+<h1>部署前必看</h1>
+<p class="lede">这页假定你<b>什么都没装、也没读过其它文档</b>。目标是让你在动手前先建立三个正确认知：<b>墨忆是个什么东西、你需要准备什么、数据库为什么只有一个选项</b>。看完再回 <a href="quickstart.html">十分钟跑通</a> 照命令做，会顺很多。</p>
+
+<h2 id="what">一、墨忆到底是什么</h2>
+<p>墨忆（Moyi）是给 AI Agent 用的<b>记忆服务</b>：你的 Agent 通过一个 HTTP 接口（或 MCP 协议）往里写「记忆」，之后用语义检索把它捞回来。它自带一个<b>管理台</b>（网页，地址 <code>/console</code>）用来管 Agent、看审计、开关全局记忆。</p>
+<p>对新手，你只要知道它由两部分组成就够开始：</p>
+<ul>
+<li><b>一个 Node 服务</b>（<code>server.js</code>）——处理 API、跑管理台逻辑。零运行时依赖，不需要 <code>npm install</code>。</li>
+<li><b>一个数据库</b>——存记忆、存 Agent、存管理员。墨忆<b>不直连数据库</b>，它通过 HTTP 打一个 PostgREST 接口（下一节解释）。</li>
+</ul>
+<p>没有第三步。你不需要单独装 Redis、消息队列、向量数据库——那些能力墨忆要么内置、要么交给这一个数据库。</p>
+
+<h2 id="need">二、你需要准备什么</h2>
+<p>按你走哪条路，需要准备的东西不同。先对号入座：</p>
+<div class="tw">
+<table>
+<thead><tr><th>你想怎么部署</th><th>需要准备</th><th>难度</th></tr></thead>
+<tbody>
+<tr><td><b>Docker 自托管全栈</b>（数据在自己手里）</td><td>一台能跑 Docker 的机器（Linux/Mac/WSL）、<code>docker</code> + <code>docker compose v2</code></td><td>中</td></tr>
+<tr><td><b>连托管 Supabase</b>（不碰数据库）</td><td>一个 Supabase 账号 + 项目；本机有 Docker 或 Node ≥ 18</td><td>低</td></tr>
+<tr><td><b>裸跑 Node 试一下</b></td><td>本机 Node ≥ 18（其它什么都能先不管）</td><td>最低</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">纯新手，建议先「裸跑 Node + Supabase」</p>
+<p>Supabase 帮你把数据库、pgvector、HTTPS 全托管了，你只需配两个值（地址 + 密钥）。等你确认墨忆好用、要长期跑，再考虑自托管。<a href="quickstart.html#node">十分钟跑通 · C</a> 是最短路径。</p>
+</div>
+
+<h2 id="db">三、数据库：只有一个选项，别找 MySQL</h2>
+<p>这是新手最容易白费功夫的地方。<b>墨忆的存储后端只支持一种：PostgreSQL + pgvector 扩展</b>。不支持 MySQL、SQLite、MongoDB、Cloudflare D1。原因很简单：记忆检索靠向量相似度，而墨忆用的向量能力来自 <code>pgvector</code>（Postgres 的扩展），建表脚本里就是 <code>CREATE EXTENSION vector</code> 和 <code>vector(384)</code> 列。换别的数据库等于换掉整套检索，不是配个连接串的事。</p>
+<p>但「PostgreSQL + pgvector」有两种来源，对你<b>完全等价</b>——因为墨忆根本不连数据库，它连的是数据库前面的 <b>PostgREST</b>（一个把 Postgres 表暴露成 REST 接口的标准组件）：</p>
+<div class="cards">
+<a class="card" href="https://supabase.com" target="_blank" rel="noopener"><b>Supabase 托管</b><span>Supabase 底层就是 Postgres + PostgREST，开项目即用，无需自己运维。</span></a>
+<a class="card" href="deploy.html#selfhost"><b>自托管 PostgREST</b><span>自己用 Docker 起 Postgres + PostgREST，数据完全在自己手里。</span></a>
+</div>
+<p>所以你可以这样记：<b>「用 Supabase」和「用自托管 PostgREST」是同一个协议的两家实现</b>，切换它俩不改一行代码。数据库细节在 <a href="schema.html">数据库结构</a> 和 <a href="database.html">数据库与环境支持</a> 两页。</p>
+
+<h2 id="minset">四、最少配哪几个变量</h2>
+<p>墨忆认的变量有 48 个（<a href="env.html">全解在这里</a>），但<b>起步只需要其中 2–3 个</b>。先跑起来，其它都是可选微调。</p>
+<div class="tw">
+<table>
+<thead><tr><th>变量</th><th>必须？</th><th>Supabase 路线</th><th>自托管路线</th></tr></thead>
+<tbody>
+<tr><td><code>MOYI_DB_URL</code><br><span class="meta">别名 <code>SUPABASE_URL</code></span></td><td><span class="badge req">必填</span></td><td>项目地址 <code>https://xxxx.supabase.co</code></td><td>PostgREST 地址 <code>http://…:3000</code></td></tr>
+<tr><td><code>MOYI_DB_TOKEN</code><br><span class="meta">别名 <code>SUPABASE_KEY</code></span></td><td><span class="badge req">必填</span></td><td><b>service_role</b> key（不是 anon）</td><td>任意非空串（除非 PostgREST 开了 JWT）</td></tr>
+<tr><td><code>MOYI_CODE</code><br><span class="meta">别名 <code>MASTER_CODE</code></span></td><td><span class="badge opt">建议</span></td><td colspan="2">注册 master（掌柜）的口令。不设则没人能成为 master——安全默认，但你将无法在管理台里管别的 Agent。</td></tr>
+<tr><td><code>MOYI_DB_BACKEND</code></td><td><span class="badge opt">可省</span></td><td colspan="2">不填时按 URL 自动识别（<code>*.supabase.co</code> → supabase）。识别规则见 <a href="runtime.html">环境自动识别</a>。</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box warn">
+<p class="box-t">两个几乎人人会踩的坑</p>
+<p><b>① URL 漏了 <code>http://</code></b>：启动自检照样通过，但每个请求都会 500。<br>
+<b>② Supabase 填了 anon key</b>：因为 RLS 只放行 service_role，anon key 会让<b>每条读静默返回 0 行</b>、不报错，表现成「记忆凭空消失」。<br>
+这两条在 <a href="troubleshoot.html">故障排查</a> 里都有对应症状。</p>
+</div>
+<p>布尔开关还有两套相反写法（<code>MOYI_DB_SEARCH</code> 要 <code>1</code>，<code>MOYI_DECAY</code> 要 <code>0</code>），详见 <a href="env.html#bool">环境变量 · 布尔约定</a>。新手阶段先别碰这些，用默认值即可。</p>
+
+<h2 id="platforms">五、能部署到哪些平台</h2>
+<p>墨忆本体是一个 Node HTTP 服务，能跑在长驻进程（服务器、Docker）和无状态平台（Vercel、Cloudflare）上。<b>但「能跑」不等于「功能一样」</b>——限速和审计这类依赖进程内存的能力，在无状态平台上会退化。完整对比在 <a href="deploy.html">部署路径</a> 那页，这里先给结论：</p>
+<div class="tw">
+<table>
+<thead><tr><th>平台</th><th>支持</th><th>一句话</th></tr></thead>
+<tbody>
+<tr><td>Docker / 裸 Node / 服务器</td><td><span class="badge post">完整</span></td><td>长驻进程，限速/审计都有效。首选。</td></tr>
+<tr><td>Vercel Serverless</td><td><span class="badge patch">可用·有退化</span></td><td>API 与管理台能用；限速每实例独立、多实例可绕过。</td></tr>
+<tr><td>Cloudflare Workers / Pages</td><td><span class="badge patch">可用·仅付费版</span></td><td>代码路径已实现并本地测试；<b>免费版 CPU 上限跑不动口令哈希</b>，必须付费版。详见 <a href="deploy.html#cloudflare">部署 · Cloudflare</a>。</td></tr>
+<tr><td>GitHub Pages</td><td><span class="badge del">仅文档站</span></td><td>Pages 是纯静态托管，跑不了 Node，只能托管这份文档，不能托管墨忆本身。见 <a href="pages.html">文档站上线 Pages</a>。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="next">六、接下来去哪</h2>
+<ul>
+<li>知道要装什么了 → 照 <a href="quickstart.html">十分钟跑通</a> 选一条路做完。</li>
+<li>要接具体平台（含 Cloudflare）→ <a href="deploy.html">部署路径</a>。</li>
+<li>想知道某个变量到底管什么 → <a href="env.html">环境变量全解</a>。</li>
+<li>报错了 → <a href="troubleshoot.html">故障排查</a>，按症状查。</li>
+</ul>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

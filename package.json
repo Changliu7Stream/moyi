@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "mcp": "node mcp-server.js",
-    "test": "node test/dedupe-calibration.js && node test/run.js",
-    "test:unit": "node test/dedupe-calibration.js",
+    "test": "node test/dedupe-calibration.js && node test/webadapter.js && node test/webentry.js && node test/run.js",
+    "test:unit": "node test/dedupe-calibration.js && node test/webadapter.js && node test/webentry.js",
     "test:integration": "node test/run.js",
     "jwt": "node scripts/gen-jwt.js",
     "docker:up": "docker compose --profile local up -d --build",

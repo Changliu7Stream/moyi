@@ -12,7 +12,7 @@
 <main>
 <p class="crumb">环境与部署 / GitHub Pages</p>
 <h1>文档站上线 GitHub Pages</h1>
-<p class="lede">这一页讲的是<b>文档站自身</b>的部署，不是墨忆服务的部署（那在<a href="deploy.html">三条部署路径</a>）。它要解决的问题只有一个：怎么让 <code>docs/</code> 里的 14 个 HTML 变成一个可以被别人访问的网站，以及<b>为什么会踩坑</b>。</p>
+<p class="lede">这一页讲的是<b>文档站自身</b>的部署，不是墨忆服务的部署（那在<a href="deploy.html">四条部署路径</a>）。它要解决的问题只有一个：怎么让 <code>docs/</code> 里的 16 个 HTML 变成一个可以被别人访问的网站，以及<b>为什么会踩坑</b>。</p>
 
 <div class="box info">
 <p class="box-t">这套文档的部署前提</p>
@@ -63,7 +63,7 @@
 <span class="c">&lt;!-- ✓ 两种落点都对 --&gt;</span>
 &lt;link rel="stylesheet" href="<b>assets/docs.css</b>"&gt;
 &lt;a href="<b>env.html</b>"&gt;环境变量&lt;/a&gt;</code></pre>
-<p>本站的写法：每个页面顶部声明 <code>&lt;div class="d-wrap"&gt;&lt;main&gt;</code>，侧栏、顶栏、搜索、上下页全部由 <code>assets/docs.js</code> 在运行时注入，链接清单集中在文件开头一个 <code>NAV</code> 数组里。这样「相对路径」这件事只需要在一处保证，不会 14 个页面各抄一遍、改一处漏十三处。</p>
+<p>本站的写法：每个页面顶部声明 <code>&lt;div class="d-wrap"&gt;&lt;main&gt;</code>，侧栏、顶栏、搜索、上下页全部由 <code>assets/docs.js</code> 在运行时注入，链接清单集中在文件开头一个 <code>NAV</code> 数组里。这样「相对路径」这件事只需要在一处保证，不会 16 个页面各抄一遍、改一处漏十五处。</p>
 
 <h3>新增一页要改哪里</h3>
 <ol>
@@ -168,7 +168,7 @@ curl -L -H "Accept: application/vnd.github+json" \
 
 <div class="box ok">
 <p class="box-t">最短路径复述</p>
-<p>① 确认 <code>docs/.nojekyll</code> 和 14 个 HTML 已提交并<b>推送到 <code>main</code></b>（本地 commit 不会触发构建）；② Settings → Pages → Deploy from a branch → <code>main</code> + <code>/docs</code> → Save；③ 打开 <code>https://&lt;owner&gt;.github.io/moyi/</code> 按<a href="#checklist">自查清单</a>过一遍。</p>
+<p>① 确认 <code>docs/.nojekyll</code> 和 16 个 HTML 已提交并<b>推送到 <code>main</code></b>（本地 commit 不会触发构建）；② Settings → Pages → Deploy from a branch → <code>main</code> + <code>/docs</code> → Save；③ 打开 <code>https://&lt;owner&gt;.github.io/moyi/</code> 按<a href="#checklist">自查清单</a>过一遍。</p>
 </div>
 
 </main>

@@ -1,0 +1,24 @@
+# 墨忆 — Cloudflare Workers 部署配置
+#
+# 用法：
+#   npm i -g wrangler        # 或 npx wrangler
+#   wrangler login
+#   wrangler secret put MOYI_DB_URL      # 逐个录入敏感变量（不要写进本文件）
+#   wrangler secret put MOYI_DB_TOKEN
+#   wrangler secret put MOYI_CODE        # 若需要开放注册
+#   wrangler deploy
+#
+# ⚠ 仅付费版（Paid）可用：口令哈希 scrypt 单次需几十毫秒 CPU，
+#   Workers 免费版每次调用上限 10ms 会掐断登录/注册。
+#   原理与限制详见 docs/deploy.html 的「Cloudflare Workers / Pages」一节。
+
+name = "moyi"
+main = "cloudflare/worker.js"
+compatibility_date = "2025-06-01"
+
+# 启用 Node.js 内置模块（events / crypto / buffer 等），墨忆零依赖但用到这些。
+compatibility_flags = ["nodejs_compat"]
+
+# 非敏感默认值。敏感值（DB_TOKEN、CODE）用 wrangler secret put，别写这里。
+[vars]
+MOYI_DB_BACKEND = "supabase"      # 连托管 Supabase；连自托管 PostgREST 改成 postgrest 并配好 URL

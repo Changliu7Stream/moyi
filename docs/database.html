@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>数据库与环境支持 · 墨忆文档</title>
+<meta name="description" content="墨忆支持哪些数据库、为什么锁定 PostgreSQL+pgvector、两份 SQL 各建什么、RLS 与角色的两种权限模型，以及运行时环境的支持矩阵。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">底层 / Database & Support</p>
+<h1>数据库与环境支持</h1>
+<p class="lede">「我用 MySQL 行不行」「能不能不装 PostgREST」「Cloudflare 支持吗」——这三类问题都在这一页收口。分两半：上半讲<b>数据库</b>，下半讲<b>运行时环境支持矩阵</b>。表结构和 SQL 细节见 <a href="schema.html">数据库结构</a>，各平台部署步骤见 <a href="deploy.html">部署路径</a>。</p>
+
+<h2 id="why">一、为什么锁定 PostgreSQL + pgvector</h2>
+<p>墨忆的核心能力是<b>语义检索</b>：把文本编码成 384 维向量，再按余弦相似度召回。存这种向量并做近邻检索，最省事的方案是让数据库本身长一个向量类型——<code>pgvector</code> 就是 Postgres 的官方扩展。建表脚本 <code>sql/00-schema.sql</code> 里写死了三样东西：</p>
+<pre><code>CREATE EXTENSION IF NOT EXISTS vector;      <span class="c">-- 依赖 pgvector 扩展</span>
+embedding  vector(384)                       <span class="c">-- 记忆表的向量列，固定 384 维</span>
+USING hnsw (embedding vector_cosine_ops)    <span class="c">-- HNSW 索引，加速近邻检索</span></code></pre>
+<p>这意味着<b>存储后端只有 PostgreSQL + pgvector 一种</b>。MySQL、SQLite、MongoDB、Cloudflare D1 都不支持这个向量类型和 HNSW 索引，接不上。<code>MOYI_EMBED_DIM</code> 也因此<b>不能改</b>——数据库列就是 <code>vector(384)</code>，配个别的维度会存不进去（<a href="env.html#g4">见 embedding 组</a>）。</p>
+
+<h2 id="rest">二、墨忆连的不是数据库，是 PostgREST</h2>
+<p>理解这一点，很多困惑会自动消失：<b>墨忆代码里没有任何 Postgres 驱动</b>，它只用 <code>fetch</code> 打一个符合 <b>PostgREST 协议</b>的 HTTP 接口。PostgREST 是一个把 Postgres 表直接暴露成 REST 端点的组件。所以：</p>
+<ul>
+<li>你不必「给墨忆装 Postgres」，你要装的是<b>PostgREST</b>（或一个用它包装过的服务）。</li>
+<li><b>Supabase 底层就是 Postgres + PostgREST</b>，所以墨忆能直连 Supabase——它俩说的是同一套协议。</li>
+<li>只要某个服务对外提供 PostgREST 风格的接口（同一套 <code>select=</code> / <code>or=</code> 查询语法、同一个 <code>Prefer</code> 头、RPC 走 <code>POST /rpc/xxx</code>），墨忆就能连，与它背后是不是原生 Postgres 无关。这也是「自托管 PostgREST」和「Supabase 托管」可以互换、代码一行不改的原因。</li>
+</ul>
+<div class="box info">
+<p class="box-t">哪些是墨忆真正会打到的接口</p>
+<p>核心只用到几张表的增删改查，加上两个数据库端函数（RPC）：<code>match_memories</code>（近邻检索）和 <code>increment_access</code>（访问计数）。RPC 缺失时墨忆会自动退回服务层扫描检索，并在响应的 <code>search_backend</code> 字段里如实标成 <code>scan</code>——不会因为你的库没建全就直接 500。细节见 <a href="schema.html">数据库结构</a>。</p>
+</div>
+
+<h2 id="sql">三、两份 SQL：建表 + 安全层</h2>
+<p>初始化一个库要按顺序跑两份 SQL，职责不同、顺序不能反：</p>
+<div class="tw">
+<table>
+<thead><tr><th>文件</th><th>建什么</th><th>幂等？</th></tr></thead>
+<tbody>
+<tr><td><code>sql/00-schema.sql</code></td><td>五张表（<code>agents / memories / admins / admin_sessions / settings</code>）+ 装 <code>vector</code> 扩展 + HNSW 索引 + <code>match_memories</code> / <code>increment_access</code> 两个 RPC</td><td>是</td></tr>
+<tr><td><code>sql/vector-search.sql</code></td><td>给五张表 <b>开 RLS</b>、只放行 <code>service_role</code>；并以 <code>IF NOT EXISTS</code> 兜底重建三张控制台表、重建两个 RPC（为「表已存在」的旧库升级准备）</td><td>是</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box stop">
+<p class="box-t">只跑 vector-search.sql 会留下半套库</p>
+<p>它是给「表已存在的旧版」做升级用的，<b>不建</b> <code>agents</code>/<code>memories</code>。全新库单跑它，SQL 编辑器逐句执行，会给你建好三张管理台表、却对缺失的表报错——得到一个「看着装好了、其实检索和计数全废」的库，比干净失败更难查。务必先 <code>00-schema.sql</code> 再 <code>vector-search.sql</code>。</p>
+</div>
+<p>自托管路线还多一步：跑 <code>docker/init/10-roles.sql</code> 建 <code>web_anon</code> 角色并收紧 GRANT。<b>自托管刻意不跑 <code>vector-search.sql</code>（不开 RLS）</b>，原因见下一节。</p>
+
+<h2 id="rls">四、两种权限模型：Supabase 开 RLS，自托管不开</h2>
+<p>墨忆的「Agent 之间互相看不到对方记忆」这件事，在服务层（<code>readFilter</code>）已经做了。数据库层的 RLS 是<b>额外兜底</b>，两家需求相反：</p>
+<div class="tw">
+<table>
+<thead><tr><th>路线</th><th>RLS</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td>Supabase</td><td><span class="badge post">开</span></td><td>anon key 会随前端分发，任何拿到它的人都能直连 PostgREST。不开 RLS，anon key 等于全库读写、绕过一切隔离。所以 <code>vector-search.sql</code> 开 RLS 且默认全拒，只放行 service_role。</td></tr>
+<tr><td>自托管 PostgREST</td><td><span class="badge opt">不开</span></td><td>PostgREST 只绑 <code>127.0.0.1</code>、公网不可达，隔离在服务层做就够。<b>关键：若误在自托管库开了 RLS 却没有面向 <code>web_anon</code> 的策略，每条读都会返回 0 行且不报错</b>——表现成「所有记忆凭空消失」。</td></tr>
+</tbody>
+</table>
+</div>
+<p>两套 SQL 的 RLS 策略<b>相反</b>，不能混用。Docker 自托管栈因此只精确挂载 <code>00-schema.sql</code> 和 <code>10-roles.sql</code> 两个文件，绝不把 <code>sql/</code> 整个目录挂进 initdb（那会把 Supabase 专用的 <code>vector-search.sql</code> 也执行了）。细节见 <a href="deploy.html#selfhost">部署 · 自托管</a>。</p>
+
+<h2 id="matrix">五、运行时环境支持矩阵</h2>
+<p>「环境」有两层含义，别混：一层是<b>数据从哪来</b>（上面几节），另一层是<b>墨忆进程跑在哪</b>（下表）。第二层决定限速、审计这些「依赖进程内存」的能力还能不能用。颜色：<span class="badge post">绿</span>＝功能完整，<span class="badge patch">黄</span>＝能用但有退化／有前提，<span class="badge del">红</span>＝跑不了。</p>
+<div class="tw">
+<table>
+<thead><tr><th>运行环境</th><th>支持度</th><th>限速 / 审计</th><th>入口</th></tr></thead>
+<tbody>
+<tr><td>Docker（cloud / local）</td><td><span class="badge post">完整</span></td><td>有效（单长驻进程）</td><td><a href="quickstart.html#selfhost">quickstart A/B</a></td></tr>
+<tr><td>裸 Node（服务器）</td><td><span class="badge post">完整</span></td><td>有效（单长驻进程）</td><td><a href="quickstart.html#node">quickstart C</a></td></tr>
+<tr><td>Vercel Serverless</td><td><span class="badge patch">可用·有退化</span></td><td>每实例独立，多实例可绕过；审计实例回收即失</td><td><a href="deploy.html#vercel">部署 · Vercel</a></td></tr>
+<tr><td>Cloudflare Workers / Pages Functions</td><td><span class="badge patch">可用·仅付费版</span></td><td>同无状态退化，且冷隔离更频繁</td><td><a href="deploy.html#cloudflare">部署 · Cloudflare</a></td></tr>
+<tr><td>GitHub Pages</td><td><span class="badge del">不支持跑服务</span></td><td>—</td><td>纯静态托管，仅用于这份文档站，见 <a href="pages.html">Pages 部署</a></td></tr>
+</tbody>
+</table>
+</div>
+<div class="box warn">
+<p class="box-t">Cloudflare 为什么是「仅付费版」</p>
+<p>墨忆的口令哈希用 scrypt（<code>N=16384</code>），实测单次约几十毫秒 CPU。Cloudflare Workers <b>免费版每次调用 CPU 上限仅 10ms</b>，登录/注册会被 <code>Error 1102</code> 掐断；付费版默认 30s 才够。代码路径已实现并本地测试，部署步骤见 <a href="deploy.html#cloudflare">部署 · Cloudflare</a>。</p>
+</div>
+
+<h2 id="notsupported">六、明确不支持什么</h2>
+<ul>
+<li><b>非 Postgres 系数据库</b>：MySQL / SQL Server / MongoDB / SQLite / Cloudflare D1——没有 pgvector，接不上。</li>
+<li><b>纯静态托管跑服务</b>：GitHub Pages、Cloudflare Pages 的静态部分、Netlify 静态——它们不跑 Node，只能托管文档/前端，跑不了墨忆 API。</li>
+<li><b>改向量维度</b>：<code>MOYI_EMBED_DIM</code> 必须 384，数据库列写死了。</li>
+<li><b>管理台里改数据库地址</b>：刻意不做。连接信息只走环境变量，否则一次 XSS 就能把实例记忆流到攻击者的库（<a href="console.html">见管理台</a>）。</li>
+</ul>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

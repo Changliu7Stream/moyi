@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════
    墨忆文档站 · 共用运行时
    零依赖、零构建。导航由本文件按 manifest 注入，
-   避免 14 个页面各抄一份侧栏（改一处漏十三处）。
+   避免 16 个页面各抄一份侧栏（改一处漏十五处）。
    ═══════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -11,12 +11,13 @@
   var NAV = [
     { group: '开始', items: [
       { href: 'index.html',    text: '总览与架构' },
+      { href: 'beginner.html', text: '部署前必看' },
       { href: 'quickstart.html', text: '十分钟跑通' }
     ]},
     { group: '环境与部署', items: [
       { href: 'env.html',     text: '环境变量全解' },
       { href: 'runtime.html', text: '环境自动识别' },
-      { href: 'deploy.html',  text: '三条部署路径' },
+      { href: 'deploy.html',  text: '四条部署路径' },
       { href: 'https.html',   text: 'HTTPS 与反向代理' },
       { href: 'pages.html',   text: '文档站上线 Pages' }
     ]},
@@ -27,6 +28,7 @@
     ]},
     { group: '底层', items: [
       { href: 'schema.html',  text: '数据库结构' },
+      { href: 'database.html', text: '数据库与环境支持' },
       { href: 'security.html', text: '安全机制' },
       { href: 'account-gaps.html', text: '对照：网站账号体系' },
       { href: 'troubleshoot.html', text: '故障排查' }
