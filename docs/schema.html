@@ -46,7 +46,7 @@
 <tr><td><code>access_count</code></td><td>integer</td><td>NOT NULL, 默认 0</td><td>访问计数，衰减算法的输入之一</td></tr>
 <tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>创建时间</td></tr>
 <tr><td><code>updated_at</code></td><td>timestamptz</td><td>可空</td><td>最近更新。NULL 表示从未修改</td></tr>
-<tr><td><code>embedding</code></td><td>vector(384)</td><td>可空</td><td>语义向量。384 维与 <code>lib/embeddings.js</code> 的 DIM 常量必须一致；旧行可能为 NULL（尚未回填）</td></tr>
+<tr><td><code>embedding</code></td><td>vector(&lt;dim&gt;)</td><td>可空</td><td>语义向量。维度由服务端 <code>MOYI_EMBED_DIM</code> 与建表脚本「维度常量」共同决定（默认 384，接 BGE 可改 768/1024）；旧行可能为 NULL（尚未回填）</td></tr>
 </tbody>
 </table>
 </div>
@@ -104,7 +104,7 @@
 <tr><td><code>agents_pkey</code></td><td>agents</td><td>btree PK</td><td>主键</td></tr>
 <tr><td><code>agents_api_key_hash_idx</code></td><td>agents</td><td>UNIQUE btree, <code>WHERE role &lt;&gt; 'master'</code></td><td>部分唯一索引：普通 agent 的 key hash 必须唯一，master 的允许多个共存（多 master 场景）。SQL 注释原文：「master 的 hash 允许重复，普通 agent 的 key 必须唯一」</td></tr>
 <tr><td><code>memories_pkey</code></td><td>memories</td><td>btree PK</td><td>主键</td></tr>
-<tr><td><code>memories_embedding_idx</code></td><td>memories</td><td>HNSW, <code>vector_cosine_ops</code></td><td>余弦距离近邻索引。要求 <code>embedding</code> 列维度固定为 384——HNSW 不支持变长向量</td></tr>
+<tr><td><code>memories_embedding_idx</code></td><td>memories</td><td>HNSW, <code>vector_cosine_ops</code></td><td>余弦距离近邻索引。要求 <code>embedding</code> 列维度固定（HNSW 不支持变长向量），换维度需重建列与索引</td></tr>
 <tr><td><code>memories_agent_created_idx</code></td><td>memories</td><td>btree (agent_id, created_at DESC)</td><td>按 Agent 列出记忆、按时间倒序——列表页的主查询路径</td></tr>
 <tr><td><code>memories_synced_idx</code></td><td>memories</td><td>btree (agent_id, synced)</td><td>同步批处理查询：<code>synced=false</code> 的条目</td></tr>
 <tr><td><code>admins_pkey</code></td><td>admins</td><td>btree PK</td><td>主键</td></tr>
@@ -127,7 +127,7 @@
 
 <h3>match_memories — 向量近邻检索</h3>
 <pre><code>match_memories(
-  query_embedding vector(384),
+  query_embedding vector,
   match_agent_id  uuid,
   match_count     int DEFAULT 20,
   min_similarity  float DEFAULT 0.10
@@ -172,7 +172,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.settings TO web_anon, authenticat
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admins TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_sessions TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.match_memories(vector(384), uuid, int, float) TO web_anon, authenticated;</code></pre>
+GRANT EXECUTE ON FUNCTION public.match_memories(vector, uuid, int, float) TO web_anon, authenticated;</code></pre>
 
 <p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：五张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
 

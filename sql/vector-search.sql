@@ -101,12 +101,15 @@ ON CONFLICT (key) DO NOTHING;
 -- ═══════════════════════════════════════════════════
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- embedding 列：与 lib/embeddings.js 的 DIM=384 必须一致
-ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS embedding vector(384);
-
--- HNSW 索引：余弦距离。数据量大时显著优于顺序扫描。
-CREATE INDEX IF NOT EXISTS memories_embedding_idx
-  ON public.memories USING hnsw (embedding vector_cosine_ops);
+-- embedding 列：维度需与 lib/embeddings.js 的 MOYI_EMBED_DIM 一致。
+-- 默认 384（本地哈希向量 / bge-small）；bge-base=768、bge-large/m3=1024。
+-- 只改下面 DO block 里的 v_dim 一处即可；改维度后若已有旧向量需重建列并回填。
+DO $$
+DECLARE v_dim int := 384;
+BEGIN
+  EXECUTE format('ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS embedding vector(%s)', v_dim);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS memories_embedding_idx ON public.memories USING hnsw (embedding vector_cosine_ops)');
+END $$;
 
 CREATE INDEX IF NOT EXISTS memories_agent_created_idx
   ON public.memories (agent_id, created_at DESC);
@@ -124,8 +127,9 @@ $$;
 -- 向量近邻检索：记忆量上万后用这个替代服务层暴力扫描。
 -- 墨忆的 API 层仍负责 agent_id 归属判断，此函数只做召回。
 -- match_agent_id 传 NULL = 不限定 agent（全局记忆模式），与 00-schema.sql 保持一致。
+-- query_embedding 用「无维度 vector」：维度由调用方传入的向量决定，改维度时 RPC 无需重建。
 CREATE OR REPLACE FUNCTION match_memories(
-  query_embedding vector(384),
+  query_embedding vector,
   match_agent_id  uuid,
   match_count     int DEFAULT 20,
   min_similarity  float DEFAULT 0.10
@@ -158,3 +162,15 @@ AS $$
   ORDER BY m.embedding <=> query_embedding
   LIMIT match_count;
 $$;
+
+-- ═══════════════════════════════════════════════════
+-- 换 embedding 维度（如从本地 384 切到 BGE-large 1024）
+-- ═══════════════════════════════════════════════════
+-- 步骤同 sql/00-schema.sql 末尾：改本文件「维度常量」v_dim 与服务端
+-- MOYI_EMBED_DIM 对齐 → 重建列 → 调用 /api/admin/backfill-embeddings 回填。
+--
+-- DROP INDEX IF EXISTS memories_embedding_idx;
+-- ALTER TABLE public.memories DROP COLUMN IF EXISTS embedding;
+-- ALTER TABLE public.memories ADD COLUMN embedding vector(1024);  -- 换成目标维度
+-- CREATE INDEX memories_embedding_idx ON public.memories USING hnsw (embedding vector_cosine_ops);
+

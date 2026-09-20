@@ -4,6 +4,12 @@
 -- 若使用 Supabase，必须改用 sql/vector-search.sql（那份会开 RLS）。
 --
 -- 幂等：全部使用 IF NOT EXISTS / OR REPLACE，可重复执行。
+--
+-- ⚠️ 向量维度：默认 384（本地哈希向量 / bge-small）。接更大模型时，
+--    只需把下面「维度常量」一处改掉，并与服务端 MOYI_EMBED_DIM 保持一致：
+--      bge-small → 384    bge-base → 768    bge-large / bge-m3 → 1024
+--    改维度后若库里已有旧向量，旧向量与新维度不在同一空间，
+--    需要重建 embedding 列（见文件末尾的「改维度」说明）并回填。
 
 -- ═══════════════════════════════════════════════════
 -- pgvector 扩展
@@ -41,13 +47,18 @@ CREATE TABLE IF NOT EXISTS public.memories (
   synced_at    timestamptz,
   access_count integer     NOT NULL DEFAULT 0,
   created_at   timestamptz NOT NULL DEFAULT now(),
-  updated_at   timestamptz,
-  embedding    vector(384)
+  updated_at   timestamptz
 );
 
--- HNSW 索引：余弦距离
-CREATE INDEX IF NOT EXISTS memories_embedding_idx
-  ON public.memories USING hnsw (embedding vector_cosine_ops);
+-- ── 维度常量（接更大 embedding 模型时只改这一处）──────────────
+-- 384 = 本地哈希向量 / bge-small；768 = bge-base；1024 = bge-large / bge-m3。
+-- 必须与服务端 MOYI_EMBED_DIM 完全一致，否则写入会被拒并静默降级本地向量。
+DO $$
+DECLARE v_dim int := 384;
+BEGIN
+  EXECUTE format('ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS embedding vector(%s)', v_dim);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS memories_embedding_idx ON public.memories USING hnsw (embedding vector_cosine_ops)');
+END $$;
 
 -- 按 agent + 时间排序
 CREATE INDEX IF NOT EXISTS memories_agent_created_idx
@@ -123,8 +134,10 @@ $$;
 -- match_agent_id 传 NULL = 不限定 agent（全局记忆模式）。
 -- 之所以不用「每个 agent 各查一次再合并」：那样一条查询要打 N 次 RPC，
 -- 而且全局排序得在服务层重做，索引也就白用了。
+-- query_embedding 用「无维度 vector」：维度由调用方传入的向量决定，运行时
+-- 与 embedding 列比对即可。这样改 embedding 维度时 RPC 无需重建。
 CREATE OR REPLACE FUNCTION match_memories(
-  query_embedding vector(384),
+  query_embedding vector,
   match_agent_id  uuid,
   match_count     int DEFAULT 20,
   min_similarity  float DEFAULT 0.10
@@ -157,3 +170,17 @@ AS $$
   ORDER BY m.embedding <=> query_embedding
   LIMIT match_count;
 $$;
+
+-- ═══════════════════════════════════════════════════
+-- 换 embedding 维度（如从本地 384 切到 BGE-large 1024）
+-- ═══════════════════════════════════════════════════
+-- 不同模型/维度的向量不在同一空间，混用会让相似度彻底失真，
+-- 所以换维度 = 重建列 + 全量回填，三步：
+--   1) 改本文件第「维度常量」处 v_dim，与服务端 MOYI_EMBED_DIM 对齐；
+--   2) 跑下面这段，按新维度重建 embedding 列（会清空旧向量）；
+--   3) 服务端调用 POST /api/admin/backfill-embeddings 重新算全部向量。
+--
+-- DROP INDEX IF EXISTS memories_embedding_idx;
+-- ALTER TABLE public.memories DROP COLUMN IF EXISTS embedding;
+-- ALTER TABLE public.memories ADD COLUMN embedding vector(1024);  -- 换成目标维度
+-- CREATE INDEX memories_embedding_idx ON public.memories USING hnsw (embedding vector_cosine_ops);

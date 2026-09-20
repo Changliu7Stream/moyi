@@ -122,7 +122,7 @@ node server.js</code></pre>
 <p>跑通之后，通常会接着做三件事：</p>
 <ul>
 <li>把墨忆挂到反向代理后面，强制 HTTPS——<a href="https.html">HTTPS 与反向代理</a> 把 <code>X-Forwarded-Proto</code> 为什么必须传讲透了。</li>
-<li>接 embedding provider，让「语义检索」名副其实——<code>MOYI_EMBED_URL</code> + <code>MOYI_EMBED_KEY</code>，接完<b>必须回填</b>一次历史记忆。</li>
+<li>接 embedding provider，让「语义检索」名副其实——推荐 BGE（中文强）：<code>MOYI_EMBED_URL</code> + <code>MOYI_EMBED_KEY</code> + <code>MOYI_EMBED_MODEL</code> + <code>MOYI_EMBED_DIM</code>（=模型输出维度，如 bge-large=1024），并把数据库列改成同维度，接完<b>必须重建列并回填</b>一次历史记忆。详见 <a href="database.html#dim">改向量维度</a>。</li>
 <li>让 Claude / Cursor 这类 MCP 客户端连上来：<code>mcp-server.js</code> 用 stdio 协议，配置片段在管理台创建 Agent 时直接给。</li>
 </ul>
 

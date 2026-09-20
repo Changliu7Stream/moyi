@@ -19,7 +19,7 @@
 <pre><code>CREATE EXTENSION IF NOT EXISTS vector;      <span class="c">-- 依赖 pgvector 扩展</span>
 embedding  vector(384)                       <span class="c">-- 记忆表的向量列，固定 384 维</span>
 USING hnsw (embedding vector_cosine_ops)    <span class="c">-- HNSW 索引，加速近邻检索</span></code></pre>
-<p>这意味着<b>存储后端只有 PostgreSQL + pgvector 一种</b>。MySQL、SQLite、MongoDB、Cloudflare D1 都不支持这个向量类型和 HNSW 索引，接不上。<code>MOYI_EMBED_DIM</code> 也因此<b>不能改</b>——数据库列就是 <code>vector(384)</code>，配个别的维度会存不进去（<a href="env.html#g4">见 embedding 组</a>）。</p>
+<p>这意味着<b>存储后端只有 PostgreSQL + pgvector 一种</b>。MySQL、SQLite、MongoDB、Cloudflare D1 都不支持这个向量类型和 HNSW 索引，接不上。<code>MOYI_EMBED_DIM</code> 默认 384，但<b>可改</b>：它必须与数据库 <code>memories.embedding</code> 列的 <code>vector(&lt;dim&gt;)</code> 取同一个值（两处分别改，见 <a href="#dim">改向量维度</a>）。接 BGE 这类语义更强的 provider 时，模型输出维度往往是 768/1024，改维度正是接入的关键一步。</p>
 
 <h2 id="rest">二、墨忆连的不是数据库，是 PostgREST</h2>
 <p>理解这一点，很多困惑会自动消失：<b>墨忆代码里没有任何 Postgres 驱动</b>，它只用 <code>fetch</code> 打一个符合 <b>PostgREST 协议</b>的 HTTP 接口。PostgREST 是一个把 Postgres 表直接暴露成 REST 端点的组件。所以：</p>
@@ -82,11 +82,23 @@ USING hnsw (embedding vector_cosine_ops)    <span class="c">-- HNSW 索引，加
 <p>墨忆的口令哈希用 scrypt（<code>N=16384</code>），实测单次约几十毫秒 CPU。Cloudflare Workers <b>免费版每次调用 CPU 上限仅 10ms</b>，登录/注册会被 <code>Error 1102</code> 掐断；付费版默认 30s 才够。代码路径已实现并本地测试，部署步骤见 <a href="deploy.html#cloudflare">部署 · Cloudflare</a>。</p>
 </div>
 
-<h2 id="notsupported">六、明确不支持什么</h2>
+<h2 id="dim">六、改向量维度（接入 BGE 等 provider）</h2>
+<p>默认 384 维适合内置本地向量与 <code>bge-small</code>。要接语义更强的模型（<code>bge-base</code>=768、<code>bge-large</code>/<code>bge-m3</code>=1024、OpenAI=1536），维度必须<b>三处对齐</b>：</p>
+<ol>
+<li><b>服务端</b>：<code>MOYI_EMBED_DIM</code> 设成模型输出维度；<code>MOYI_EMBED_URL</code>/<code>MOYI_EMBED_KEY</code>/<code>MOYI_EMBED_MODEL</code> 填 provider 信息。多数 BGE 部署不接受请求里的 <code>dimensions</code> 参数，保持 <code>MOYI_EMBED_SEND_DIM</code> 为空即可。</li>
+<li><b>数据库列</b>：把 <code>sql/00-schema.sql</code> 或 <code>sql/vector-search.sql</code> 顶部「维度常量」<code>v_dim</code> 改成同一个值，重建 <code>embedding</code> 列。</li>
+<li><b>回填</b>：旧向量与新维度不在同一空间，用新维度重建列后，跑 <code>POST /api/admin/backfill-embeddings</code>（master，带 <code>{"overwrite": true}</code>）全量重刷。</li>
+</ol>
+<p>RPC <code>match_memories</code> 的入参已改为无维度 <code>vector</code>，改维度时<b>不需要</b>重建函数——只要列维度对得上即可。</p>
+<div class="box warn">
+<p class="box-t">改维度是破坏性操作</p>
+<p>重建 <code>embedding</code> 列会清空已有向量，务必先完成第 1 步的服务端配置、再重建列、最后回填，顺序不能反。维度对不上时，写入会被拒并静默降级本地哈希向量，看似成功实则语义失效。</p>
+</div>
+
+<h2 id="notsupported">七、明确不支持什么</h2>
 <ul>
 <li><b>非 Postgres 系数据库</b>：MySQL / SQL Server / MongoDB / SQLite / Cloudflare D1——没有 pgvector，接不上。</li>
 <li><b>纯静态托管跑服务</b>：GitHub Pages、Cloudflare Pages 的静态部分、Netlify 静态——它们不跑 Node，只能托管文档/前端，跑不了墨忆 API。</li>
-<li><b>改向量维度</b>：<code>MOYI_EMBED_DIM</code> 必须 384，数据库列写死了。</li>
 <li><b>管理台里改数据库地址</b>：刻意不做。连接信息只走环境变量，否则一次 XSS 就能把实例记忆流到攻击者的库（<a href="console.html">见管理台</a>）。</li>
 </ul>
 

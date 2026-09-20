@@ -41,7 +41,7 @@
 </div>
 
 <h2 id="db">三、数据库：只有一个选项，别找 MySQL</h2>
-<p>这是新手最容易白费功夫的地方。<b>墨忆的存储后端只支持一种：PostgreSQL + pgvector 扩展</b>。不支持 MySQL、SQLite、MongoDB、Cloudflare D1。原因很简单：记忆检索靠向量相似度，而墨忆用的向量能力来自 <code>pgvector</code>（Postgres 的扩展），建表脚本里就是 <code>CREATE EXTENSION vector</code> 和 <code>vector(384)</code> 列。换别的数据库等于换掉整套检索，不是配个连接串的事。</p>
+<p>这是新手最容易白费功夫的地方。<b>墨忆的存储后端只支持一种：PostgreSQL + pgvector 扩展</b>。不支持 MySQL、SQLite、MongoDB、Cloudflare D1。原因很简单：记忆检索靠向量相似度，而墨忆用的向量能力来自 <code>pgvector</code>（Postgres 的扩展），建表脚本里就是 <code>CREATE EXTENSION vector</code> 和一个 <code>vector</code> 类型的向量列（默认 384 维，接 BGE 等更大模型时可改维度，见<a href="database.html#dim">改向量维度</a>）。换别的数据库等于换掉整套检索，不是配个连接串的事。</p>
 <p>但「PostgreSQL + pgvector」有两种来源，对你<b>完全等价</b>——因为墨忆根本不连数据库，它连的是数据库前面的 <b>PostgREST</b>（一个把 Postgres 表暴露成 REST 接口的标准组件）：</p>
 <div class="cards">
 <a class="card" href="https://supabase.com" target="_blank" rel="noopener"><b>Supabase 托管</b><span>Supabase 底层就是 Postgres + PostgREST，开项目即用，无需自己运维。</span></a>
