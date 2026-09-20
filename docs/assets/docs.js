@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════
    墨忆文档站 · 共用运行时
    零依赖、零构建。导航由本文件按 manifest 注入，
-   避免 13 个页面各抄一份侧栏（改一处漏十二处）。
+   避免 14 个页面各抄一份侧栏（改一处漏十三处）。
    ═══════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -17,7 +17,8 @@
       { href: 'env.html',     text: '环境变量全解' },
       { href: 'runtime.html', text: '环境自动识别' },
       { href: 'deploy.html',  text: '三条部署路径' },
-      { href: 'https.html',   text: 'HTTPS 与反向代理' }
+      { href: 'https.html',   text: 'HTTPS 与反向代理' },
+      { href: 'pages.html',   text: '文档站上线 Pages' }
     ]},
     { group: '使用', items: [
       { href: 'console.html', text: '引导安装与管理台' },

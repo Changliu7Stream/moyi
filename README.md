@@ -6,19 +6,19 @@ AI 记忆中间层。基于 MCP 协议，让任何 AI 工具共享同一套记�
 
 换工具，不丢记忆。换存储后端（Supabase ↔ 自托管 Postgres），也不用改代码。
 
-详细文档在 [`docs/`](./docs/)（源码目录）——部署、环境变量逐条解释、环境自动识别的判定规则、
+详细文档在 [`docs/`](./docs/)（源码目录，14 页）——部署、环境变量逐条解释、环境自动识别的判定规则、
 接口清单、数据库结构、安全机制，以及一页「对照：网站账号体系」。**已开 GitHub Pages 的话**，
 同一套内容在线：<https://changliu7stream.github.io/moyi/>。
 
 开启方法（一次性，仓库 → Settings → Pages）：**Source** 选 `Deploy from a branch`，
 **Branch** 选 `main`，**Folder** 选 `/docs`，Save。约 10 秒后顶部出现站点地址。
 
-> 选 `/docs` 而不是 `/（root）`：选根目录会把整个代码仓库发布出去，
-> 而 Pages 站点是公开的，即使仓库是私有仓库。`docs/.nojekyll` 用来关掉 Jekyll 构建——
-> 本站没有 Markdown 也不需要构建，不关的话 `_` 开头的文件会被静默丢掉、某些写法会被 Liquid 解析器吃掉。
+> 完整说明（为什么只能选 `/docs`、`.nojekyll` 的作用、链接必须相对路径、用 REST API 开启、
+> 构建状态怎么查、故障排查顺序）见文档站自己的那一页：
+> [`docs/pages.html`](./docs/pages.html)。
 
- Pages 生效需要一次推送到 `main`（本地提交不会触发构建）。发布源选 `/docs` 时站点落在项目站
-根地址（`https://<owner>.github.io/moyi/`），站内链接全是相对路径，两种落点都能正常工作。
+两条最容易踩的：选 `/（root）` 会把整个代码仓库发布成公开站点；Pages 只在**推送到 `main`**
+后才构建，本地 commit 不会触发。
 
 ---
 

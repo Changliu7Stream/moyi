@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>文档站上线 GitHub Pages · 墨忆文档</title>
+<meta name="description" content="这套文档本身怎么部署到 GitHub Pages：发布源为什么选 main + /docs、.nojekyll 的作用、全部链接为什么必须是相对路径、如何用 REST API 一次性开启、构建状态怎么查、以及出问题时的排查顺序。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">环境与部署 / GitHub Pages</p>
+<h1>文档站上线 GitHub Pages</h1>
+<p class="lede">这一页讲的是<b>文档站自身</b>的部署，不是墨忆服务的部署（那在<a href="deploy.html">三条部署路径</a>）。它要解决的问题只有一个：怎么让 <code>docs/</code> 里的 14 个 HTML 变成一个可以被别人访问的网站，以及<b>为什么会踩坑</b>。</p>
+
+<div class="box info">
+<p class="box-t">这套文档的部署前提</p>
+<p>零构建、零依赖、零配置。没有 package.json、没有打包步骤、没有 CI。仓库里的 <code>docs/</code> 就是产物本身，GitHub Pages 直接把它当静态文件发。所以「部署失败」的原因几乎只可能是配置选错，而不是构建出错。</p>
+</div>
+
+<h2 id="enable">开启：Settings → Pages，三步</h2>
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>仓库 Settings → Pages</b><span>侧栏 Code, planning and automation 分组下的 <b>Pages</b>。需要 admin 或 maintainer 权限</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>Source 选 Deploy from a branch</b><span>另一个选项 GitHub Actions 是给需要构建流程的站点用的；本站不需要</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">3</span><b>Branch: main ／ Folder: /docs</b><span>Save。约 10 秒到 1 分钟后顶部出现站点地址</span></div>
+</div>
+<p>站点地址是 <code>https://&lt;owner&gt;.github.io/moyi/</code>（项目站固定落在 <code>/&lt;repo&gt;/</code> 下）。<b>注意路径里没有 <code>/docs</code></b>——发布源选 <code>/docs</code> 的意思是「以那个目录作为站点根」，不是「挂在 <code>/docs</code> 下」。所以文档首页是 <code>…/moyi/</code>，<code>…/moyi/docs/</code> 反而是 404。</p>
+
+<h2 id="why-docs">Folder 为什么必须选 <code>/docs</code>，不能选 <code>/（root）</code></h2>
+<div class="box stop">
+<p class="box-t">选根目录等于把整个代码仓库发布成公开网站</p>
+<p>发布源选 <code>/</code> 时，Pages 会读仓库根目录的<b>全部内容</b>。<code>server.js</code>、<code>sql/</code>、<code>test/</code> 这些当然无所谓，但一旦哪天有人往仓库里提交了不该公开的东西，它就会跟着发出去。而且 GitHub 官方文档明确警告：<b>Pages 站点在公网上始终可访问，即使仓库是私有仓库</b>（私有仓库需要付费套餐才能开 Pages，但站点本身不是私有的）。所以发布源要收窄到 <code>/docs</code>。</p>
+</div>
+<p>另一点：Folder 下拉里只有 <code>/（root）</code> 和 <code>/docs</code> 两个选项——Pages 不接受任意子目录作为发布源。这就是文档站必须放在 <code>docs/</code> 而不是 <code>site/</code> 或 <code>website/</code> 的原因，没有商量余地。</p>
+
+<h2 id="nojekyll">.nojekyll 为什么必须存在</h2>
+<p>从分支发布时，Pages 默认按 <b>Jekyll</b> 处理（除非 <code>build_type</code> 指定为不需要构建）。本站是纯手写 HTML，Jekyll 在这里只有破坏性、没有好处：</p>
+<div class="tw">
+<table>
+<thead><tr><th>不写 .nojekyll 会怎样</th><th>机制</th></tr></thead>
+<tbody>
+<tr><td>下划线开头的文件被静默丢掉</td><td>Jekyll 约定 <code>_*</code> 与 <code>.*</code> 是源文件／元文件，不进输出。本文档曾有个 <code>docs/_inventory.md</code> 草稿，正好落在这条规则里</td></tr>
+<tr><td>含 <code>{{</code> 或 <code>{%</code> 的正文可能整页构建失败</td><td>Markdown/HTML 会过 Liquid 模板解析器，未闭合的花括号是解析错误。文档里写代码片段时很容易碰上</td></tr>
+<tr><td>目录里缺 <code>index.html</code> 时行为不可预期</td><td>Jekyll 会尝试生成站点地图与 permalink，而不是原样直出</td></tr>
+</tbody>
+</table>
+</div>
+<p>放一个<b>空文件</b> <code>docs/.nojekyll</code> 即可，GitHub 见到它就跳过 Jekyll，直接按静态文件发。它已经在仓库里。</p>
+<div class="box warn">
+<p class="box-t">.nojekyll 必须被 git 跟踪</p>
+<p>它是隐藏文件，<code>.gitignore</code> 里如果有 <code>.*</code> 之类的规则会把它排除掉——那样本地有、仓库没有，Pages 依旧走 Jekyll。提交后到仓库页面确认 <code>docs/.nojekyll</code> 真的在。本站 <code>.gitignore</code> 没有这类规则，但你自己改过就得复核。</p>
+</div>
+
+<h2 id="relative">全部链接必须是相对路径</h2>
+<p>这是本站最容易埋雷的一条。项目站挂在 <code>/&lt;repo&gt;/</code> 子路径下，而<b>本地预览挂在根</b>（<code>python -m http.server</code> 起在 <code>docs/</code> 时，页面在 <code>http://127.0.0.1:8000/env.html</code>）。绝对路径 <code>/env.html</code> 在本地能用，上线就 404——它会指向 <code>https://&lt;owner&gt;.github.io/env.html</code>，那是你的<b>用户站</b>（如果有），不是项目站。</p>
+<pre><code><span class="c">&lt;!-- ✗ 本地正常，Pages 上 404 --&gt;</span>
+&lt;link rel="stylesheet" href="<b>/assets/docs.css</b>"&gt;
+&lt;a href="<b>/env.html</b>"&gt;环境变量&lt;/a&gt;
+
+<span class="c">&lt;!-- ✓ 两种落点都对 --&gt;</span>
+&lt;link rel="stylesheet" href="<b>assets/docs.css</b>"&gt;
+&lt;a href="<b>env.html</b>"&gt;环境变量&lt;/a&gt;</code></pre>
+<p>本站的写法：每个页面顶部声明 <code>&lt;div class="d-wrap"&gt;&lt;main&gt;</code>，侧栏、顶栏、搜索、上下页全部由 <code>assets/docs.js</code> 在运行时注入，链接清单集中在文件开头一个 <code>NAV</code> 数组里。这样「相对路径」这件事只需要在一处保证，不会 14 个页面各抄一遍、改一处漏十三处。</p>
+
+<h3>新增一页要改哪里</h3>
+<ol>
+<li>建 <code>docs/新页面.html</code>，照现有页面写骨架（<code>&lt;!DOCTYPE html&gt;</code>、<code>lang="zh-CN"</code>、<code>data-ver="v3.3"</code>、<code>viewport-fit=cover</code>、<code>assets/docs.css</code>、底部 <code>assets/docs.js</code>）。</li>
+<li>在 <code>docs/assets/docs.js</code> 的 <code>NAV</code> 里加一行 <code>{ href: '新页面.html', text: '…' }</code>。</li>
+<li>正文里给 <code>&lt;h2&gt;</code> 手动写 <code>id</code>（写 <code>id</code> 的会保留，不写的由 JS 按中文标题生成 slug）。</li>
+</ol>
+<p>只改这两处，导航、搜索索引、上下页链接、页脚自动跟上。<b>不要</b>在任何页面里手写侧栏 HTML。</p>
+
+<h2 id="api">不开网页，用 API 一次性开启</h2>
+<p>适合脚本化，或者你想连着推送一起做。<b>需要 <code>repo</code> 权限的凭据</b>（classic PAT 勾 <code>repo</code>；fine-grained PAT 需要 <b>Pages: Read and write</b> 加 <b>Administration: Read and write</b> 两个权限）。</p>
+<pre><code><span class="c"># 1) 创建 Pages 站点，发布源 main + /docs</span>
+curl -L -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/Changliu7Stream/moyi/pages \
+  -d '{"source":{"branch":"main","path":"/docs"},"build_type":"legacy"}'
+
+<span class="c"># 2) 查状态：html_url 就是站点地址，status 变 built 即上线</span>
+curl -L -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/Changliu7Stream/moyi/pages
+
+<span class="c"># 3) 已经建好但源选错了，改源（PUT 时 path 是必填）</span>
+curl -L -X PUT \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/Changliu7Stream/moyi/pages \
+  -d '{"source":{"branch":"main","path":"/docs"},"https_enforced":true}'</code></pre>
+<div class="tw">
+<table>
+<thead><tr><th>响应码</th><th>含义</th><th>怎么办</th></tr></thead>
+<tbody>
+<tr><td><code>201</code></td><td>已创建</td><td>正常，去查状态</td></tr>
+<tr><td><code>409</code></td><td>站点已存在</td><td>改用 PUT，别重复 POST</td></tr>
+<tr><td><code>422</code></td><td>校验失败</td><td>九成是 <code>path</code> 写成了 <code>docs</code>（要写 <code>/docs</code>），或分支不存在</td></tr>
+<tr><td><code>403</code></td><td>权限不够</td><td>token 缺 Administration 写权限，或缺仓库 admin 身份</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box stop">
+<p class="box-t">token 不要写进仓库、命令行历史或 compose 文件</p>
+<p>用环境变量传（<code>$GH_TOKEN</code>），用完在 GitHub 上撤销。这条和项目本身的原则一致：<b>能写库的凭据绝不落到会被同步、会被打印的地方</b>——和<a href="console.html#trust">数据库配置为什么只能待在环境变量里</a>是同一个理由。</p>
+</div>
+
+<h3>改完文档没生效？手动催一次构建</h3>
+<pre><code><span class="c"># 相当于「不提交新 commit 也重新构建一次」</span>
+curl -L -X POST -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/Changliu7Stream/moyi/pages/builds
+
+<span class="c"># 看最近一次构建结果，error.message 会写失败原因</span>
+curl -L -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/Changliu7Stream/moyi/pages/builds/latest</code></pre>
+<p>构建请求限「每仓库同时一个、每人同时一个」，连着点会排队甚至被拒；先查 <code>builds/latest</code> 再决定要不要催。</p>
+
+<h2 id="checklist">上线后自查清单</h2>
+<div class="tw">
+<table>
+<thead><tr><th>检查</th><th>怎么看</th><th>不通过说明</th></tr></thead>
+<tbody>
+<tr><td>首页能开</td><td>访问 <code>https://&lt;owner&gt;.github.io/moyi/</code></td><td>404 → 发布源没配对，或仓库里没有 <code>docs/index.html</code></td></tr>
+<tr><td>样式生效</td><td>看页面是不是水墨风；DevTools 里 <code>assets/docs.css</code> 状态 200</td><td>404 → 有人写了绝对路径，或 <code>assets/</code> 没提交</td></tr>
+<tr><td>侧栏出现</td><td>左侧有分组目录、顶部有搜索框</td><td>没有 → <code>docs.js</code> 未加载（检查脚本标签或仓库里是否缺文件）</td></tr>
+<tr><td>跨页链接</td><td>点几个页面间链接</td><td>404 → 路径写成了 <code>/x.html</code>；见<a href="#relative">相对路径</a></td></tr>
+<tr><td>站内搜索</td><td>搜「<code>X-Forwarded-Proto</code>」应有命中</td><td>提示「索引不可用」→ 只会在 <code>file://</code> 下出现，http 访问不该有</td></tr>
+<tr><td>HTTPS 强制</td><td>用 <code>http://</code> 访问应跳 https</td><td>没跳 → PUT 时补 <code>"https_enforced":true</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="trouble">排查顺序</h2>
+<p>Pages 的问题几乎全在这四类里，按顺序排：</p>
+<div class="tw">
+<table>
+<thead><tr><th>现象</th><th>最可能原因</th><th>动作</th></tr></thead>
+<tbody>
+<tr><td>整站 404，设置页显示「Your site is live at …」</td><td>DNS/CDN 边缘还没同步，或首次构建仍在排队</td><td>等 1 分钟；查 <code>builds/latest</code> 的 <code>status</code></td></tr>
+<tr><td>提示缺少 <code>/docs</code> 文件夹的构建错误</td><td><code>docs/</code> 从发布分支上被删了或没提交</td><td><code>git ls-files docs | head</code> 确认文件在 <code>main</code> 上</td></tr>
+<tr><td>部分页面 404、样式丢失</td><td>绝对路径，或 <code>assets/</code> 未跟踪</td><td>按<a href="#checklist">自查清单</a>逐条走</td></tr>
+<tr><td>内容显示成原始文本、下划线文件不见了</td><td>Jekyll 仍在处理 → <code>.nojekyll</code> 没进仓库</td><td>确认 <code>docs/.nojekyll</code> 已被 git 跟踪并推到 <code>main</code></td></tr>
+<tr><td>仓库是私有的，站点却公开可见</td><td>Pages 站点本身不设访问控制</td><td>这不是故障，是 Pages 的行为。<b>文档站不含秘密，但别把含凭据的文件放进 docs/</b></td></tr>
+</tbody>
+</table>
+</div>
+<p>本地先看一眼再推，成本几乎为零：</p>
+<pre><code>cd docs && python3 -m http.server 8099 --bind 127.0.0.1
+<span class="c"># 浏览器打开 http://127.0.0.1:8099/</span></code></pre>
+<p>本站全部链接是相对路径，所以本地 http 下看到的效果与线上一致——唯一的差别是本地挂在根，绝对路径这种错误反而<b>看不出</b>来。这也是清单里要先查跨页链接的原因：真正的判据是「有没有人写了以 <code>/</code> 开头的 href」。</p>
+
+<h2 id="scope">Pages 不负责什么</h2>
+<div class="box warn">
+<p class="box-t">文档站是静态文件，跟墨忆服务没有部署关系</p>
+<p>Pages 只发 <code>docs/</code>。它<b>不会</b>运行 Node、<b>不会</b>提供 <code>/api/*</code>、<b>不会</b>代理到数据库。管理台（<code>/console</code>）仍然只在墨忆服务自己的部署里（Docker / Vercel / 裸进程）。把文档站地址当成管理台地址去访问是打不开的。</p>
+</div>
+<p>两条实际影响：</p>
+<ul>
+<li>文档里的接口示例都用 <code>http://localhost:3906</code> 作占位，读者要自己换成部署后的地址。文档站<b>不做</b>「点一下就在真实实例上跑一次」的交互演示——那需要一个公开的墨忆实例，等于把演示库交给所有访客。</li>
+<li>站内搜索靠 <code>docs.js</code> 用 <code>fetch</code> 抓同目录各页正文现建索引，纯前端。页面总量在这个量级下没问题；将来涨到几十页再换成预生成的 <code>index.json</code>。</li>
+</ul>
+
+<div class="box ok">
+<p class="box-t">最短路径复述</p>
+<p>① 确认 <code>docs/.nojekyll</code> 和 14 个 HTML 已提交并<b>推送到 <code>main</code></b>（本地 commit 不会触发构建）；② Settings → Pages → Deploy from a branch → <code>main</code> + <code>/docs</code> → Save；③ 打开 <code>https://&lt;owner&gt;.github.io/moyi/</code> 按<a href="#checklist">自查清单</a>过一遍。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>
