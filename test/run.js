@@ -305,6 +305,33 @@ async function main() {
   ok('MCP forget 确实删除了', gone.status === 404, gone.status);
   ok('MCP forget 拒绝非法 ID', (() => { const m = lines.find(l => l.id === 7); return m && m.result && m.result.isError === true; })(), txt(7).slice(0, 60));
 
+  section('E2 MCP over HTTP（/api/mcp，Bearer 认证，规范名 + 别名）');
+  const bearer = { Authorization: 'Bearer ' + VK };
+  const mcpPost = (m) => api('/api/mcp', 'POST', m, null, bearer);
+  let h = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  ok('HTTP-MCP initialize 握手', h.status === 200 && h.data.result && h.data.result.serverInfo.name === 'moyi', h.data);
+  h = await mcpPost({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const htools = (h.data && h.data.result && h.data.result.tools) || [];
+  ok('HTTP-MCP tools/list 含规范名 memory_save/search/forget',
+    ['memory_save', 'memory_search', 'memory_forget', 'memory_recall', 'memory_graph_query', 'memory_scope_list', 'memory_audit_log'].every(n => htools.some(t => t.name === n)),
+    htools.map(t => t.name));
+  ok('HTTP-MCP tools/list 不重复暴露别名', !htools.some(t => t.name === 'remember' || t.name === 'search_memory'), htools.map(t => t.name));
+  h = await mcpPost({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'memory_save', arguments: { content: 'HTTP-MCP 测试：用户喜欢青色' } } });
+  ok('HTTP-MCP memory_save 走通', h.status === 200 && /已记住|合并|未存储/.test(h.data.result.content[0].text), h.data.result);
+  h = await mcpPost({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'memory_search', arguments: { query: '青色' } } });
+  ok('HTTP-MCP memory_search 有结果', /相关度|未找到/.test(h.data.result.content[0].text), h.data.result);
+  h = await mcpPost({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'remember', arguments: { content: '别名调用测试' } } });
+  ok('HTTP-MCP 旧别名 remember 仍可命中', h.status === 200 && /已记住|合并|未存储/.test(h.data.result.content[0].text), h.data.result);
+  h = await mcpPost({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'memory_recall', arguments: { id: 'bad' } } });
+  ok('HTTP-MCP memory_recall 拒绝非法 ID', h.data.result.isError === true, h.data.result);
+  h = await mcpPost({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'memory_audit_log', arguments: {} } });
+  ok('HTTP-MCP 非 master 调 audit 被拒', /仅 master/.test(h.data.result.content[0].text), h.data.result);
+  h = await api('/api/mcp', 'GET', null, null, bearer);
+  ok('HTTP-MCP GET 回 405（仅支持 POST）', h.status === 405, h.status);
+  // 无凭据应 401（认证在上游完成）
+  h = await api('/api/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  ok('HTTP-MCP 无凭据回 401', h.status === 401, h.status);
+
   section('F 存储层故障必须显式报错，不能伪装成「记忆消失」');
   // 这是迁移中最可能踩到的坑：anon key 在开 RLS 后被拒，
   // 若服务层把 401 当成空数组返回，用户看到的是「我的记忆全没了」。

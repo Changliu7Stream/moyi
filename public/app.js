@@ -747,7 +747,15 @@ function formatAuditDetail(detail) {
 
 // ── MCP 配置弹窗 ──
 $('mcpCfgBtn').addEventListener('click', () => {
-  const cfg = {
+  const httpCfg = {
+    mcpServers: {
+      moyi: {
+        url: location.origin + '/api/mcp',
+        headers: { Authorization: 'Bearer ' + KEY }
+      }
+    }
+  };
+  const stdioCfg = {
     mcpServers: {
       moyi: {
         command: 'node',
@@ -756,17 +764,23 @@ $('mcpCfgBtn').addEventListener('click', () => {
       }
     }
   };
-  $('mcpConfig').textContent = JSON.stringify(cfg, null, 2);
+  $('mcpHttpConfig').textContent = JSON.stringify(httpCfg, null, 2);
+  $('mcpConfig').textContent = JSON.stringify(stdioCfg, null, 2);
   $('moyiUrl').textContent = location.origin;
   $('mcpModal').classList.remove('hidden');
 });
 $('closeMcp').addEventListener('click', () => $('mcpModal').classList.add('hidden'));
 $('mcpModal').querySelector('.modal-backdrop').addEventListener('click', () => $('mcpModal').classList.add('hidden'));
-$('copyCfgBtn').addEventListener('click', () => {
-  navigator.clipboard.writeText($('mcpConfig').textContent).then(()=>{
-    const b=$('copyCfgBtn'); const o=b.textContent; b.textContent='已复制'; setTimeout(()=>b.textContent=o,1500);
+function wireCopy(btnId, preId) {
+  const btn = $(btnId); if (!btn) return;
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText($(preId).textContent).then(() => {
+      const o = btn.textContent; btn.textContent = '已复制'; setTimeout(() => btn.textContent = o, 1500);
+    });
   });
-});
+}
+wireCopy('copyHttpCfgBtn', 'mcpHttpConfig');
+wireCopy('copyCfgBtn', 'mcpConfig');
 
 // ── Agent 管理（掌柜）──
 $('agentsBtn').addEventListener('click', async () => {

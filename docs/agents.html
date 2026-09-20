@@ -31,6 +31,18 @@
 <p>换个角度说：甲 Agent 的 Key 泄漏，泄漏面就是甲的那一套记忆，不会连累乙和丙。</p>
 
 <h2 id="mcp">给多个 Agent 各配一份 MCP</h2>
+<p>MCP 客户端连墨忆有<b>两种传输形态，可以同时配、各用各的</b>——协议并不限制只能接一种：</p>
+<div class="tw">
+<table>
+<thead><tr><th>形态</th><th>怎么连</th><th>适合</th></tr></thead>
+<tbody>
+<tr><td><b>stdio（本地）</b></td><td>客户端在你机器上拉起 <code>mcp-server.js</code> 进程，进程再打本服务的 <code>/api/*</code></td><td>Claude Desktop 这类要落地进程、能配 <code>command</code> 的桌面客户端</td></tr>
+<tr><td><b>HTTP（远程）</b></td><td>客户端直接连部署地址的 <code>/api/mcp</code>，凭 <code>Authorization: Bearer &lt;key&gt;</code> 鉴权</td><td>支持「远程 MCP / Streamable HTTP」的客户端，免装 Node、免跑本地进程</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>形态一：stdio（本地薄壳）</h3>
 <p>「独立」落在配置上就是：<b>一个 Agent 一份 <code>env</code>，两份配置除了 <code>MOYI_KEY</code> 之外可以完全一样</b>。管理台的 Agent 页在每次创建/重置 Key 后，会直接产出可粘贴的片段：</p>
 <pre><code>{
   "mcpServers": {
@@ -44,10 +56,28 @@
     }
   }
 }</code></pre>
-<p>把这份片段分别贴进不同客户端（Claude Desktop、IDE 插件、自建 Agent 进程），它们就各自连到同一个墨忆、但读写各自的记忆。<code>mcp-server.js</code> 是个无状态的 stdio 薄壳，多开几份互不打架。</p>
+<p>把这份片段分别贴进不同客户端，它们就各自连到同一个墨忆、但读写各自的记忆。<code>mcp-server.js</code> 是个无状态的 stdio 薄壳，多开几份互不打架。</p>
+
+<h3>形态二：HTTP（远程，免安装）</h3>
+<p>如果客户端支持远程 MCP，直接填一段 <code>url</code> + <code>Bearer</code> 头即可，不用在本机跑任何进程。管理台弹出的「MCP 配置」里也会一并给出这段：</p>
+<pre><code>{
+  "mcpServers": {
+    "moyi": {
+      "url": "https://&lt;你的部署域名&gt;/api/mcp",
+      "headers": { "Authorization": "Bearer moyi_&lt;这个 Agent 专属的 key&gt;" }
+    }
+  }
+}</code></pre>
+<p>这条 <code>/api/mcp</code> 走的是 MCP 的 <b>Streamable HTTP</b> 传输：客户端把 JSON-RPC 请求（<code>initialize</code> / <code>tools/list</code> / <code>tools/call</code> 等）POST 过来，服务端复用与 REST 完全相同的鉴权和作用域逻辑后回 JSON。鉴权用的还是同一把 <code>moyi_…</code> Key，因此<b>每把 Key 依旧只管自己那套记忆</b>，隔离规则和 stdio 一模一样。</p>
+
+<div class="box info">
+<p class="box-t">HTTP 形态暴露的工具名</p>
+<p><code>/api/mcp</code> 的 <code>tools/list</code> 返回规范工具名：<code>memory_save</code>、<code>memory_recall</code>、<code>memory_search</code>、<code>memory_forget</code>、<code>memory_graph_query</code>、<code>memory_stats</code>、<code>memory_health</code>、<code>memory_scope_list</code>、<code>memory_audit_log</code>。其中 <code>memory_audit_log</code> 仅超管 Key 可用。stdio 形态沿用其历史工具名（<code>remember</code> / <code>search_memory</code> 等），两者都映射到同一批 REST 接口。</p>
+</div>
+
 <div class="box warn">
 <p class="box-t">别图省事共用一把 Key</p>
-<p>两个 Agent 用同一把 Key，就等于它们<b>共享同一套记忆</b>——彼此的私人备忘互相可见、互相去重合并、互相影响衰减排序。要隔离就得一号一钥。真要共享，正确的做法是开全局记忆（下面），而不是合用凭据。</p>
+<p>两个 Agent 用同一把 Key，就等于它们<b>共享同一套记忆</b>——彼此的私人备忘互相可见、互相去重合并、互相影响衰减排序。要隔离就得一号一钥。真要共享，正确的做法是开全局记忆（下面），而不是合用凭据。这一条对 stdio 和 HTTP 两种形态都成立。</p>
 </div>
 <p>Key 泄露或想断开某个 Agent：管理台点「重置 Key」，旧 Key 立即失效；「删除」则连 Agent 记录和它的全部记忆一起级联删除（<code>ON DELETE CASCADE</code>），<b>不可逆</b>。</p>
 

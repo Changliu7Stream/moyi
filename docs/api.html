@@ -144,6 +144,22 @@
 </table>
 </div>
 
+<h3 id="mcp-http">MCP over HTTP（/api/mcp）</h3>
+<p>Agent 面还有一条特殊路径 <code>/api/mcp</code>：它是 MCP 协议的 <b>Streamable HTTP</b> 端点，客户端把 JSON-RPC 请求体直接 POST 过来，服务端在<b>完成 X-Moyi-Key / Bearer 认证之后</b>才派发到工具执行。工具实现复用同面的 REST 端点（内部自调用 <code>route</code>），逻辑与 REST 一份，作用域与鉴权规则完全一致。</p>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>请求体</th><th>响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/mcp</code></td><td>X-Moyi-Key 或 Bearer</td><td>JSON-RPC 2.0 对象或数组，<code>method</code> ∈ <code>initialize</code>/<code>ping</code>/<code>tools/list</code>/<code>tools/call</code>/<code>resources/list</code>/<code>prompts/list</code>/notifications</td><td>JSON-RPC 响应（或响应数组）；全为通知时无 body</td><td>200；202（纯通知）；400（非法体）；401；405（GET/PUT/…）</td><td><code>lib/moyi.js:1142-1171, 1281-1284</code>；协议层 <code>lib/mcp-http.js</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/mcp</code></td><td>—</td><td>—</td><td>—</td><td>405（本端点仅支持 POST）</td><td><code>lib/moyi.js:1143-1146</code></td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">HTTP 形态暴露的工具</p>
+<p>规范名共 10 个：<code>memory_save</code>、<code>memory_recall</code>、<code>memory_search</code>、<code>memory_forget</code>、<code>memory_graph_query</code>、<code>memory_stats</code>、<code>memory_health</code>、<code>memory_scope_list</code>、<code>memory_audit_log</code>（<b>master only</b>）。<code>tools/list</code> 只回这 10 个规范名；<code>tools/call</code> 接受若干历史别名（<code>remember</code> / <code>retrieve_memory</code> / <code>search_memory</code> / <code>forget</code> / <code>memory_graph</code> 等），别名不重复列出。</p>
+</div>
+
 <h2 id="console-api">控制台接口（/api/console/*）</h2>
 <p>控制台是另一套认证面：Agent 用 API Key，管理员用<b>口令 + 会话 Cookie</b>。所有写操作（POST/PATCH/DELETE）额外要求 <code>X-Moyi-Console: 1</code> 头，缺则回 403。</p>
 

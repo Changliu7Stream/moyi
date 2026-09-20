@@ -140,6 +140,10 @@ body{font-family:'Noto Serif SC','Source Han Serif SC','Songti SC','SimSun',seri
 .mcp-config{background:var(--ink);color:#d4d0c8;padding:16px;border-radius:2px;font-size:12px;line-height:1.6;overflow-x:auto;margin-bottom:14px;font-family:'Courier New',monospace;}
 .mcp-hint{font-size:12px;color:var(--ink-mist);margin-top:8px;}
 .mcp-hint code{color:var(--ink-fade);}
+.mcp-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-fade);margin:0 0 8px;}
+.mcp-label .mcp-tag{font-size:10px;padding:1px 6px;border-radius:2px;color:var(--seal);border:1px solid var(--seal);}
+.mcp-copy{margin:0 0 20px;}
+.mcp-divider{border-top:1px solid var(--line);margin:22px 0 16px;}
 
 /* ── 角色徽章 ── */
 .role-badge{display:inline-block;padding:2px 10px;margin-left:6px;border:1px solid var(--vermilion);border-radius:2px;font-size:11px;color:var(--vermilion);letter-spacing:.1em;}

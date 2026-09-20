@@ -174,9 +174,18 @@
       <button class="modal-close" id="closeMcp">&times;</button>
     </div>
     <div class="mcp-body">
-      <p class="mcp-desc">在支持 MCP 的客户端配置如下，Agent 即可存取记忆：</p>
+      <p class="mcp-desc">在支持 MCP 的客户端里粘贴下面任一配置，Agent 即可存取记忆。两种接入方式可同时使用。</p>
+
+      <p class="mcp-label"><span class="mcp-tag">推荐</span> 远程 HTTP 接入（免安装，直接连本服务）</p>
+      <pre id="mcpHttpConfig" class="mcp-config"></pre>
+      <button id="copyHttpCfgBtn" class="btn btn-ghost btn-sm mcp-copy">复制配置</button>
+
+      <div class="mcp-divider"></div>
+
+      <p class="mcp-label"><span class="mcp-tag">本地</span> stdio 接入（在本机跑 mcp-server.js）</p>
       <pre id="mcpConfig" class="mcp-config"></pre>
-      <button id="copyCfgBtn" class="btn btn-ghost btn-sm">复制配置</button>
+      <button id="copyCfgBtn" class="btn btn-ghost btn-sm mcp-copy">复制配置</button>
+
       <p class="mcp-hint">密钥已自动填入。本服务地址：<code id="moyiUrl"></code></p>
     </div>
   </div>
