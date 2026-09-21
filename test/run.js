@@ -283,8 +283,14 @@ async function main() {
   await sleep(900);
   send({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'memory_graph', arguments: { limit: 50 } } });
   await sleep(900);
+  // stdio 这一路也要和技能层对上：HTTP 能用的，本地进程不能是残的
+  send({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'skill_list', arguments: {} } });
+  await sleep(900);
+  send({ jsonrpc: '2.0', id: 11, method: 'resources/read', params: { uri: 'moyi-skill://不存在' } });
+  await sleep(900);
   mcp.stdin.end();
   await sleep(300);
+
 
   const lines = out.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   const txt = id => { const m = lines.find(l => l.id === id); return m && m.result && m.result.content ? m.result.content[0].text : ''; };
@@ -1012,6 +1018,144 @@ async function main() {
   r = await cons('/login', 'POST', { username: '任何人', password: 'whatever-pass-1' });
   ok('表缺失时登录回 409 并指引跑迁移', r.status === 409 && /迁移|SQL/.test(JSON.stringify(r.data)), r.data);
   await setTable('admins', false); await setTable('settings', false); await setTable('admin_sessions', false);
+
+  section('M 技能层：草稿→发布、Agent 隔离、URL 白名单、MCP 资源');
+  const SKL = require(path.join(ROOT, 'lib', 'skills.js'));
+  // L8 末尾 resetAdmin 把 admins 表清空并登出了会话，这里重新引导一次拿到会话。
+  // 技能审核是管理员动作，用超管跑通即可（普通 admin 走同一条代码路径）。
+  const boot = await cons('/setup', 'POST', { username: '掌柜', password: 'correct-horse-battery' });
+  const MK = boot.cookie;
+  ok('（前置）重新引导取得管理员会话', boot.status === 201 && Boolean(MK), boot.data);
+
+  // ── M1 生成侧：Agent 只能落 draft，status 由服务端赋值 ──
+  const skillMd = '---\nname: deploy-runbook\ndescription: 墨忆上线与迁移的操作手册\n---\n\n# 上线手册\n\n第一步跑 SQL。';
+  r = await api('/api/skills', 'POST', { content: skillMd, status: 'published', origin: 'console' }, AK);
+  ok('Agent 提交技能回 201 且强制为 draft', r.status === 201 && r.data.skill.status === 'draft', r.data);
+  ok('客户端传的 status/origin 被忽略（origin 记为 agent）',
+    r.data.skill.origin === 'agent' && r.data.skill.status === 'draft', r.data.skill);
+  ok('frontmatter 的 name 与 description 被自动识别',
+    r.data.skill.name === 'deploy-runbook' && /上线|操作手册/.test(r.data.skill.description), r.data.skill);
+  ok('回执带 moyi-skill:// 资源地址', r.data.skill.uri === 'moyi-skill://deploy-runbook', r.data.skill);
+
+  r = await api('/api/skills', 'GET', null, AK);
+  ok('提交者自己看得到草稿', (r.data.drafts || []).some(s => s.name === 'deploy-runbook'), r.data);
+  ok('草稿不在公共清单里', !(r.data.skills || []).some(s => s.name === 'deploy-runbook'), r.data.skills);
+  // 别人的草稿按 404 处理：存在性本身不该泄露
+  r = await api('/api/skills/deploy-runbook', 'GET', null, BK);
+  ok('他人读你的草稿 → 404（不是 403，不泄露存在性）', r.status === 404, r.status);
+  r = await api('/api/skills/deploy-runbook', 'GET', null, AK);
+  ok('作者本人能读回自己的草稿全文', r.status === 200 && /上线手册/.test(r.data.content || ''), r.status);
+
+  // ── M2 发布这道闸只能由人过 ──
+  r = await cons('/skills', 'GET', null, MK);
+  ok('管理台可看到待审草稿与计数', r.status === 200 && r.data.counts.draft >= 1
+    && r.data.skills.some(s => s.name === 'deploy-runbook'), r.data && r.data.counts);
+  const sid = (r.data.skills.find(s => s.name === 'deploy-runbook') || {}).id;
+  r = await cons('/skills/' + sid + '/publish', 'POST', {}, MK);
+  ok('管理台发布草稿 → published', r.status === 200 && r.data.skill.status === 'published', r.data);
+  r = await api('/api/skills', 'GET', null, BK);
+  ok('发布后对所有 Agent 可见（公共只读层）',
+    (r.data.skills || []).some(s => s.name === 'deploy-runbook'), r.data.skills);
+  r = await api('/api/skills/deploy-runbook', 'GET', null, BK);
+  ok('他人可读已发布技能', r.status === 200 && /上线手册/.test(r.data.content), r.status);
+
+  // 管理台直建 = 人放的，直接 published
+  r = await cons('/skills', 'POST', { name: 'review-checklist', content: '# 评审清单\n\n先看迁移。' }, MK);
+  ok('管理台直建即为 published', r.status === 201 && r.data.skill.status === 'published', r.data);
+  ok('无 frontmatter 时用首个标题推出描述', /评审清单/.test(r.data.skill.description || ''), r.data.skill);
+  r = await cons('/skills', 'POST', { name: 'Bad Name!', content: '# x' }, MK);
+  ok('技能名校验拒绝大写与空格', r.status === 400, r.data);
+  r = await api('/api/skills', 'POST', { content: '   ' }, AK);
+  ok('空正文被拒', r.status === 400, r.data);
+
+  // ── M3 refresh 的语义：没有出处就无从刷新，不猜 ──
+  r = await cons('/skills/' + sid + '/refresh', 'POST', {}, MK);
+  ok('无 source_url 的技能刷新被拒（不做无根据的重抓）', r.status === 400 && /来源地址/.test(r.data.error), r.data);
+
+  // ── M4 URL 白名单：拒绝发生在发包之前 ──
+  r = await cons('/skills/preview', 'POST', { url: 'http://169.254.169.254/latest/meta-data/' }, MK);
+  ok('非白名单主机（元数据地址）被拒', r.status === 400 && /白名单/.test(r.data.error), r.data);
+  r = await cons('/skills/preview', 'POST', { url: 'file:///etc/passwd' }, MK);
+  ok('file://  scheme 被拒', r.status === 400 && /http\(s\)/.test(r.data.error), r.data);
+  r = await cons('/skills/preview', 'POST', { url: 'https://github.com/anthropics/skills/tree/main' }, MK);
+  ok('目录（tree）链接明确拒绝而不是抓一个网页', r.status === 400 && /目录/.test(r.data.error), r.data);
+  r = await cons('/skills/preview', 'POST', { url: 'not a url' }, MK);
+  ok('非法 URL 被拒', r.status === 400, r.data);
+  // 单元层面钉住改写规则（不发网络请求）
+  ok('blob 链接改写为 raw 域', SKL.normalizeSourceUrl('https://github.com/a/b/blob/main/SKILL.md').url.href
+    === 'https://raw.githubusercontent.com/a/b/main/SKILL.md', SKL.normalizeSourceUrl('https://github.com/a/b/blob/main/SKILL.md'));
+  ok('含斜杠的分支名不被误切成路径', SKL.normalizeSourceUrl('https://github.com/a/b/blob/feature/x/SKILL.md').url.href
+    === 'https://raw.githubusercontent.com/a/b/feature/x/SKILL.md', SKL.normalizeSourceUrl('https://github.com/a/b/blob/feature/x/SKILL.md').url.href);
+  ok('带账号信息的 URL 被拒', Boolean(SKL.normalizeSourceUrl('https://user:pw@example.com/a.md').error));
+  const w = ['raw.githubusercontent.com'];
+  ok('白名单精确命中放行', SKL.hostAllowed('raw.githubusercontent.com', w) === true);
+  ok('子域按后缀命中', SKL.hostAllowed('a.example.com', ['example.com']) === true);
+  ok('后缀相似但不属子域要拒', SKL.hostAllowed('evil-example.com', ['example.com']) === false);
+  ok('frontmatter 折叠式描述被拼回一行',
+    /a b/.test(SKL.parseFrontmatter('---\nname: x\ndescription: a\n  b\n---\nbody').description || ''),
+    SKL.parseFrontmatter('---\nname: x\ndescription: a\n  b\n---\nbody'));
+  ok('无 frontmatter 时 inferMeta 落到首个标题',
+    SKL.inferMeta('# 标题在这里\n正文').description === '标题在这里', SKL.inferMeta('# 标题在这里\n正文'));
+  ok('文件名叫 skill.md 时不用它当名字（避免同名撞车）',
+    SKL.inferMeta('正文没有标题', 'https://x/SKILL.md').name === null, SKL.inferMeta('正文没有标题', 'https://x/SKILL.md'));
+
+  // ── M5 MCP：技能既是工具也是资源 ──
+  const mcpPost2 = (m) => api('/api/mcp', 'POST', m, null, bearer);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 30, method: 'initialize', params: {} });
+  ok('MCP initialize 声明 resources 能力',
+    Boolean(h.data.result.capabilities.resources), h.data.result.capabilities);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 31, method: 'tools/list', params: {} });
+  ok('MCP 工具含 skill_propose/list/read',
+    ['skill_propose', 'skill_list', 'skill_read'].every(n => h.data.result.tools.some(t => t.name === n)),
+    h.data.result.tools.map(t => t.name));
+  h = await mcpPost2({ jsonrpc: '2.0', id: 32, method: 'tools/call',
+    params: { name: 'skill_read', arguments: { name: 'deploy-runbook' } } });
+  ok('skill_read 取到已发布技能正文', /上线手册/.test(h.data.result.content[0].text), h.data.result);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 33, method: 'tools/call',
+    params: { name: 'skill_propose',
+      arguments: { name: 'agent-authored', content: '# 新技能\n\n说明', status: 'published' } } });
+  ok('MCP skill_propose 也只能落草稿', /草稿/.test(h.data.result.content[0].text), h.data.result);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 42, method: 'tools/call',
+    params: { name: 'skill_propose', arguments: { content: '# 只有标题没有名字' } } });
+  ok('推不出合法技能名时如实报错（不静默造一个占位名）',
+    /name 不能为空/.test(h.data.result.content[0].text), h.data.result);
+  // 资源清单同样按调用者的 key 过滤：自己的草稿在，别人的不在
+  const ownRes = await mcpPost2({ jsonrpc: '2.0', id: 44, method: 'resources/list', params: {} });
+  ok('自己的草稿出现在自己的资源清单里',
+    (ownRes.data.result.resources || []).some(x => x.name === 'agent-authored'), ownRes.data.result.resources);
+  const bkRes = await api('/api/mcp', 'POST', { jsonrpc: '2.0', id: 43, method: 'resources/list', params: {} },
+    null, { Authorization: 'Bearer ' + BK });
+  ok('他人看不到你刚提交的草稿资源',
+    !(bkRes.data.result.resources || []).some(x => x.name === 'agent-authored'), bkRes.data.result.resources);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 34, method: 'tools/call',
+    params: { name: 'skill_read', arguments: { name: '../etc/passwd' } } });
+  ok('skill_read 拒绝越界技能名', h.data.result.isError === true, h.data.result);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 35, method: 'resources/list', params: {} });
+  const rres = h.data.result.resources;
+  ok('resources/list 把已发布技能暴露成 moyi-skill:// 资源',
+    Array.isArray(rres) && rres.some(x => x.uri === 'moyi-skill://deploy-runbook' && x.mimeType === 'text/markdown'), rres);
+  ok('资源项含 name 与 description（清单可读）',
+    (rres.find(x => x.name === 'deploy-runbook') || {}).description !== undefined, rres);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 36, method: 'resources/read',
+    params: { uri: 'moyi-skill://deploy-runbook' } });
+  ok('resources/read 回 contents[].text',
+    h.data.result && /上线手册/.test((h.data.result.contents || [])[0].text || ''), h.data);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 37, method: 'resources/read', params: { uri: 'moyi-skill://nope' } });
+  ok('不存在的资源回 -32002', (h.data.error || {}).code === -32002, h.data);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 38, method: 'resources/read',
+    params: { uri: 'moyi-skill://..%2F..%2Fetc' } });
+  ok('资源 uri 里的越界名也回 -32002（不拼进内部路径）', (h.data.error || {}).code === -32002, h.data);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 39, method: 'resources/read', params: { uri: 'file:///etc/passwd' } });
+  ok('非本方案 uri 回 -32002', (h.data.error || {}).code === -32002, h.data);
+
+  // ── M6 表缺失时如实报错，而不是「技能凭空消失」──
+  await setTable('skills', true);
+  r = await api('/api/skills', 'GET', null, AK);
+  ok('skills 表缺失时回 409 并指引跑迁移', r.status === 409 && /00-schema/.test(String(r.data.hint)), r.data);
+  h = await mcpPost2({ jsonrpc: '2.0', id: 41, method: 'resources/list', params: {} });
+  ok('表缺失时 resources/list 降级为空清单而非报错', Array.isArray(h.data.result.resources)
+    && h.data.result.resources.length === 0, h.data);
+  await setTable('skills', false);
 
   srv.kill();
   csrv.kill();

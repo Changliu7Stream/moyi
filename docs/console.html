@@ -15,7 +15,7 @@
 <p class="lede">管理台是给<b>部署者</b>用的，不是给 Agent 用的。它管三件事：发钥匙（Agent）、管人（管理员）、开关（实例设置）。它<b>看不见任何一条记忆的正文</b>——这是刻意的。</p>
 
 <div class="flow">
-<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 agents / memories / admins / admin_sessions / oauth_tokens / oauth_codes / settings 七张表</span></div>
+<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 agents / memories / skills / admins / admin_sessions / oauth_tokens / oauth_codes / settings 八张表</span></div>
 <div class="flow-arrow">→</div>
 <div class="flow-step"><span class="no">2</span><b>配环境变量</b><span>存储 URL + token（这步不能省，也不能在网页里填）</span></div>
 <div class="flow-arrow">→</div>

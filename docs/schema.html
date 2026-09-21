@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>数据库结构 · 墨忆文档</title>
-<meta name="description" content="墨忆的七张表、索引、函数，以及自托管与 Supabase 两套栈在权限模型上的差异。以 sql/00-schema.sql 与 docker/init/10-roles.sql 为权威。">
+<meta name="description" content="墨忆的八张表、索引、函数，以及自托管与 Supabase 两套栈在权限模型上的差异。以 sql/00-schema.sql 与 docker/init/10-roles.sql 为权威。">
 <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
 <div class="d-wrap"><main>
 <p class="crumb">参考 / Schema</p>
 <h1>数据库结构</h1>
-<p class="lede">墨忆一共七张表：agents、memories、admins、admin_sessions、oauth_tokens、oauth_codes、settings，外加两个 SQL 函数。其中 oauth_* 两张只在开启 <a href="env.html#oauth">MCP 浏览器授权</a> 时才会被读写。本页以 <code>sql/00-schema.sql</code> 与 <code>docker/init/10-roles.sql</code> 为权威，逐列、逐索引讲清「为什么长这样」。</p>
+<p class="lede">墨忆一共八张表：agents、memories、skills、admins、admin_sessions、oauth_tokens、oauth_codes、settings，外加两个 SQL 函数。其中 oauth_* 两张只在开启 <a href="env.html#oauth">MCP 浏览器授权</a> 时才会被读写。本页以 <code>sql/00-schema.sql</code> 与 <code>docker/init/10-roles.sql</code> 为权威，逐列、逐索引讲清「为什么长这样」。</p>
 
-<h2>七张表</h2>
+<h2>八张表</h2>
 
 <h3>agents — 持有 API Key 的工具身份</h3>
 <div class="tw">
@@ -51,8 +51,27 @@
 </table>
 </div>
 
-<h3>admins — 管理控制台的人</h3>
+<h3>skills — 公共只读技能</h3>
 <div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>uuid</td><td>PK, <code>gen_random_uuid()</code></td><td>与 agents 同一主键空间风格；管理台按 id 审核，Agent 按 name 读取，两条路都要能定位同一行</td></tr>
+<tr><td><code>name</code></td><td>text</td><td>NOT NULL UNIQUE</td><td>slug，同时是 MCP 资源名 <code>moyi-skill://&lt;name&gt;</code>。服务层限 <code>[a-z0-9._-]</code> 且 ≤64 字符，唯一性就是「一份技能」的身份</td></tr>
+<tr><td><code>description</code></td><td>text</td><td>NOT NULL, 默认 <code>''</code></td><td>清单展示用的一句话用途，从 frontmatter / 首个标题推断，人工可改；≤500 字符</td></tr>
+<tr><td><code>content</code></td><td>text</td><td>NOT NULL</td><td>技能正文（Markdown）。上限 200KB 由服务层校验，超限<b>直接拒收不截断</b>——截断后的说明书语义可能已经反了</td></tr>
+<tr><td><code>status</code></td><td>text</td><td>NOT NULL, 默认 <code>'draft'</code>, <b>CHECK IN ('published','draft','rejected')</b></td><td>三态是这功能的安全边界。Agent 生成的只能是 draft，须人在管理台放行才 published；rejected 保留正文供追溯但不出现在任何列表</td></tr>
+<tr><td><code>origin</code></td><td>text</td><td>NOT NULL, 默认 <code>'console'</code>, CHECK IN ('console','agent','url')</td><td>来源：管理台直建 / Agent 提交 / 地址抓取。服务端赋值，客户端传值一律忽略</td></tr>
+<tr><td><code>source_url</code></td><td>text</td><td>可空</td><td>该技能的原始出处，「重抓刷新」据此回源；仅存地址不代表已抓过</td></tr>
+<tr><td><code>sha256</code></td><td>text</td><td>NOT NULL</td><td>正文哈希。刷新时判断「有没有变」，没变就不写库；也用于人工核对存下来的是不是链接指向的那份</td></tr>
+<tr><td><code>agent_id</code></td><td>uuid</td><td>FK → agents ON DELETE <b>SET NULL</b></td><td>「谁提交的」溯源，用于草稿的可见性判定。<b>不用 CASCADE</b>：删掉一个 Agent 不该顺手毁掉一份已经发布的公共文档</td></tr>
+<tr><td><code>fetched_at</code></td><td>timestamptz</td><td>可空</td><td>最近一次从 source_url 抓到的时间；手工撰写为空</td></tr>
+<tr><td><code>created_at</code> / <code>updated_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>排序与审计</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>admins — 管理控制台的人</h3><div class="tw">
 <table>
 <thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
 <tbody>
@@ -140,6 +159,8 @@
 <tr><td><code>memories_embedding_idx</code></td><td>memories</td><td>HNSW, <code>vector_cosine_ops</code></td><td>余弦距离近邻索引。要求 <code>embedding</code> 列维度固定（HNSW 不支持变长向量），换维度需重建列与索引</td></tr>
 <tr><td><code>memories_agent_created_idx</code></td><td>memories</td><td>btree (agent_id, created_at DESC)</td><td>按 Agent 列出记忆、按时间倒序——列表页的主查询路径</td></tr>
 <tr><td><code>memories_synced_idx</code></td><td>memories</td><td>btree (agent_id, synced)</td><td>同步批处理查询：<code>synced=false</code> 的条目</td></tr>
+<tr><td><code>skills_pkey</code> / <code>skills_name_key</code></td><td>skills</td><td>btree PK / UNIQUE btree</td><td>主键；name 唯一约束的隐式索引，兼作「按名读取」的等值查找</td></tr>
+<tr><td><code>skills_status_idx</code></td><td>skills</td><td>btree (status, updated_at DESC)</td><td>公共层清单查询主路径：取 <code>status='published'</code> 并按更新时间倒序</td></tr>
 <tr><td><code>admins_pkey</code></td><td>admins</td><td>btree PK</td><td>主键</td></tr>
 <tr><td><code>admins_username_key</code></td><td>admins</td><td>UNIQUE btree</td><td>username 唯一约束的隐式索引</td></tr>
 <tr><td><code>admin_sessions_pkey</code></td><td>admin_sessions</td><td>btree PK</td><td>主键</td></tr>
@@ -184,15 +205,15 @@
 
 <div class="box stop">
 <p class="box-t">自托管栈下 PostgREST 绝不能暴露公网</p>
-<p><code>docker/init/10-roles.sql</code> 给 <code>web_anon</code> 授了<b>全部七张表</b>的 SELECT/INSERT/UPDATE/DELETE。不开 RLS 意味着：拿到 anon token 就能直接读 <code>admins.password_hash</code>——那是人挑的口令的 scrypt 哈希，可离线爆破。这不是理论风险，是架构决定的。</p>
+<p><code>docker/init/10-roles.sql</code> 给 <code>web_anon</code> 授了<b>全部八张表</b>的 SELECT/INSERT/UPDATE/DELETE。不开 RLS 意味着：拿到 anon token 就能直接读 <code>admins.password_hash</code>——那是人挑的口令的 scrypt 哈希，可离线爆破。这不是理论风险，是架构决定的。</p>
 </div>
 
 <div class="tw">
 <table>
 <thead><tr><th>维度</th><th>自托管（00-schema + 10-roles）</th><th>Supabase（vector-search）</th></tr></thead>
 <tbody>
-<tr><td>RLS</td><td><b>关</b>。信任边界在墨忆服务层</td><td><b>开</b>。七张表全部 ENABLE</td></tr>
-<tr><td>web_anon 权限</td><td>七张表全量 CRUD + 两个函数 EXECUTE</td><td><b>无任何权限</b>（无 policy = 默认拒绝）</td></tr>
+<tr><td>RLS</td><td><b>关</b>。信任边界在墨忆服务层</td><td><b>开</b>。八张表全部 ENABLE</td></tr>
+<tr><td>web_anon 权限</td><td>八张表全量 CRUD + 两个函数 EXECUTE</td><td><b>无任何权限</b>（无 policy = 默认拒绝）</td></tr>
 <tr><td>service_role</td><td>不存在这个角色</td><td>显式 policy 全量放行</td></tr>
 <tr><td>admins 暴露风险</td><td>PostgREST 暴露 = 口令哈希库公开</td><td>RLS 默认拒绝，anon 读不到</td></tr>
 <tr><td>admin_sessions_token_idx</td><td>有（冗余，见上）</td><td>无</td></tr>
@@ -213,7 +234,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_codes TO web_anon, authenti
 GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.match_memories(vector, uuid, int, float) TO web_anon, authenticated;</code></pre>
 
-<p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：七张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
+<p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：八张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
 
 <h2>为什么墨忆只依赖 PostgREST 协议</h2>
 <p>墨忆不认识「数据库」，只认识「PostgREST 协议的 HTTP 接口」。所有存储操作都是 <code>fetch(REST + path, opts)</code>——自托管的 PostgREST 和 Supabase 托管的 PostgREST 可以互换，代码一行不改。差异只在 URL 形态和路径前缀（Supabase 挂 <code>/rest/v1</code>，原生 PostgREST 挂根路径）。</p>

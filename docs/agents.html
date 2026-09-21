@@ -109,6 +109,14 @@
 </div>
 <p>安全边界：PKCE 强制 <code>S256</code>，授权码一次性、60 秒过期；redirect_uri 必须精确命中白名单，拒绝带 <code>#fragment</code> 或 <code>user@</code> 的地址（防开放重定向）；同意表单额外校验 <code>Origin</code> 等于本站。token 只存 sha256 哈希，明文只在签发瞬间出现一次。<b>refresh token 本版不轮转</b>：同一把 refresh 可在自己的 30 天内反复换 access，所以「检测到重放并连坐吊销」这类防护暂时谈不上——真出事时的处置手段仍然是管理台删掉那个 Agent。端点逐条清单见 <a href="api.html#oauth">接口清单页的浏览器授权一节</a>。</p>
 
+<h2 id="skills">技能层：另一张表，和记忆互不干扰</h2>
+<p>除了记忆，墨忆还有一层<b>公共只读的技能</b>（SKILL.md 风格的说明文档）。它和「全局记忆」是两回事，用完全不同的机制达成同样的「不串味」：</p>
+<div class="box info">
+<p class="box-t">技能是共享读，记忆是私有写</p>
+<p>技能存在<b>独立的 <code>skills</code> 表</b>，和 <code>memories</code> 没有任何外键或查询交集。所有 Agent 读的是同一份已发布技能（全局统一），但每个 Agent 的<b>记忆仍然各自隔离</b>——上面那套 <code>agent_id=eq.&lt;aid&gt;</code> 作用域对技能层完全不适用，因为技能压根不走记忆的作用域函数。<a href="agents.html#global">全局记忆开关</a>只影响 <code>memories</code> 的读范围，<b>碰不到技能，也碰不到别人的记忆</b>。</p>
+</div>
+<p>Agent 侧有三个 MCP 工具和一组 <code>moyi-skill://</code> resources 可以读技能：<code>skill_list</code> 列出可见技能、<code>skill_read</code> 读某一份正文、<code>skill_propose</code> 让 Agent 提交一份<b>草稿</b>。关键的安全点在于：<b>Agent 只能提草稿</b>——<code>status</code>、<code>origin</code>、<code>agent_id</code> 三个字段永远由服务端赋值，客户端传什么都不认。草稿必须由管理员在管理台人工发布后才对其他 Agent 可见；别人未发布的草稿对你<b>返回 404（不是 403）</b>，连存在都不暴露。这一层的设计动机和逐条端点见 <a href="skills.html">技能层专页</a> 与 <a href="api.html#skills-api">接口清单</a>。</p>
+
 <h2 id="global">全局记忆：只放宽「能读到谁」</h2>
 <p>管理台 → 设置 → 打开「全局记忆」。生效范围用一句话概括：</p>
 <div class="box info">

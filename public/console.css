@@ -47,7 +47,17 @@
 /* ── 徽章 ── */
 .c-badge{font-size:10px;letter-spacing:.1em;padding:2px 8px;border:1px solid var(--line);border-radius:2px;color:var(--ink-mist);background:var(--paper);}
 .c-badge.master{border-color:var(--vermilion);color:var(--vermilion);}
+.c-badge.on{border-color:var(--ink-fade);color:var(--ink);}
 .c-badge.off{border-color:var(--ink-ghost);color:var(--ink-ghost);text-decoration:line-through;}
+
+/* ── 技能页 ── */
+/* 正文框比单行输入高，等宽便于读 Markdown；字号略小、限高可滚 */
+.sk-ta{min-height:180px;max-height:420px;font-family:'Courier New',monospace;font-size:12px;line-height:1.6;resize:vertical;}
+/* 状态筛选：一行小圆片，宽度自适应，窄屏换行 */
+.c-tabs-sub{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 14px;}
+.chip{font:inherit;font-size:12px;letter-spacing:.04em;padding:5px 14px;border:1px solid var(--line);border-radius:14px;background:var(--paper);color:var(--ink-mist);cursor:pointer;}
+.chip:hover{border-color:var(--ink-ghost);}
+.chip.active{border-color:var(--ink);color:var(--ink);background:var(--paper-2);}
 
 /* ── 设置页 ── */
 .c-settings{max-width:560px;}

@@ -23,9 +23,9 @@
 <p>该文件<b>不建</b> <code>agents</code> / <code>memories</code>，这点它自己的头注释写得很明白——它是给表已存在的旧版墨忆做升级用的。</p>
 </div>
 <p>正确顺序，SQL Editor 里按次粘贴执行：</p>
-<pre><code>sql/00-schema.sql        <span class="c">-- 1. 建全部七张表 + pgvector 扩展 + HNSW 索引</span>
+<pre><code>sql/00-schema.sql        <span class="c">-- 1. 建全部八张表 + pgvector 扩展 + HNSW 索引</span>
 sql/vector-search.sql    <span class="c">-- 2. 开 RLS、补控制台相关表、建两个 RPC</span></code></pre>
-<p>分工是这样：<code>00-schema.sql</code> 建 <code>agents</code> / <code>memories</code> / <code>admins</code> / <code>admin_sessions</code> / <code>oauth_tokens</code> / <code>oauth_codes</code> / <code>settings</code> 七张表并装扩展；<code>vector-search.sql</code> 负责给七张表开 RLS、建 <code>match_memories</code> 与 <code>increment_access</code> 两个 RPC。后者对前者的产物只补不建，所以顺序反了会失败，跑对了则<b>幂等</b>——重复执行只出 NOTICE，不报错。老库升级（表已在）可以只跑第二份。</p>
+<p>分工是这样：<code>00-schema.sql</code> 建 <code>agents</code> / <code>memories</code> / <code>skills</code> / <code>admins</code> / <code>admin_sessions</code> / <code>oauth_tokens</code> / <code>oauth_codes</code> / <code>settings</code> 八张表并装扩展；<code>vector-search.sql</code> 负责给八张表开 RLS、建 <code>match_memories</code> 与 <code>increment_access</code> 两个 RPC。后者对前者的产物只补不建，所以顺序反了会失败，跑对了则<b>幂等</b>——重复执行只出 NOTICE，不报错。老库升级（表已在）可以只跑第二份。</p>
 
 <h3>为什么这个 SQL 开 RLS</h3>
 <p>Supabase 项目天然是多租户的：anon key 会随前端代码分发，任何拿到它的人都能直连 PostgREST。如果不开 RLS，anon key 等于全库读写权限——墨忆的 agent 隔离会被完全绕过。<code>sql/vector-search.sql</code> 因此对所有表 <code>ENABLE ROW LEVEL SECURITY</code>，且<b>不建任何面向 anon 的策略</b>，默认全拒。只有 service_role key 通过显式 policy 被放行。</p>

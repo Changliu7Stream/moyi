@@ -145,7 +145,7 @@ cp .env.example .env.local     # 填入 MOYI_DB_URL / MOYI_DB_TOKEN / MOYI_CODE
 
 #### 2. 初始化数据库
 
-- **Supabase**：后台 → SQL Editor → **按顺序执行两份**：先 `sql/00-schema.sql`（建七张表），
+- **Supabase**：后台 → SQL Editor → **按顺序执行两份**：先 `sql/00-schema.sql`（建八张表），
   再 `sql/vector-search.sql`（开 RLS + 建 RPC）。只跑后者会报
   `relation "public.agents" does not exist`——那份脚本不建 `agents` / `memories`，
   它是给表已存在的旧库做升级用的。
@@ -249,6 +249,24 @@ RPC 的 EXECUTE，`REVOKE CREATE ON SCHEMA public`），并在文件里显式写
 | memory_stats | 记忆库概况：分布、同步状态、向量覆盖率 |
 | memory_health | 衰减体检：哪些记忆正在褪色、会被降到哪级（默认只预览不写库） |
 | memory_graph | 关联图谱：某条记忆的邻居、或全库拓扑概况（含孤立节点） |
+
+### 技能层（Skill Registry）
+
+除记忆外，墨忆还有一层**公共只读的技能**：一份 SKILL.md 风格的 Markdown，
+所有 Agent 共享，与各自独立的记忆分属两张表、两个资源命名空间。Agent 凭自己那把
+Key 就能读到 `published` 的全部技能，也能把自己摸索出的操作手册提交成**草稿**
+（`skill_propose`）。草稿只有它自己看得到，必须由人在管理台点「发布」才进入公共层。
+
+| 工具 | 说明 |
+| --- | --- |
+| skill_list | 列出可读技能：公共层已发布的全部，外加你自己仍是草稿的那些 |
+| skill_read | 按名称读取一份技能的完整 Markdown 正文 |
+| skill_propose | 提交一份操作手册为**草稿**（`status`/`origin` 服务端赋值，客户端传值一律忽略）|
+
+技能同时以 MCP **resources** 暴露（`moyi-skill://<name>`）：支持 resources 的客户端
+能直接列出并读取，无需走工具。管理台「按 URL 导入」可粘贴一个 `.md` 直链自动抓取、
+推断名称与描述——抓取主机受 `MOYI_SKILL_URL_HOSTS` 域名白名单约束（默认仅 GitHub 原始内容域）。
+详见 `docs/skills.html`。
 
 ### 典型流程
 
@@ -660,6 +678,9 @@ HEALTHCHECK 用 busybox `wget --spider` 探根路径（管理页能返回即算�
   和审计日志同一类限制。
 - **自托管栈的 agent 隔离在服务层**，PostgREST 本身没有隔离概念——
   一旦把它暴露到公网，等于全库公开。
+- **技能是公共只读层，发布=向所有 Agent 下指令**。正因如此 Agent 只能落 draft，
+  发布必须是人的动作；URL 抓取受域名白名单约束（不做「解析后校验 IP」，那需要手搓
+  HTTP 客户端才能防住 DNS rebinding）。墨忆本身只存与取技能文本，不替你生成技能正文。
 - **浏览器授权是精简子集，不做动态注册**。client_id 与回调白名单由环境变量写死，
   只有一个整实例的 `mcp` scope，同意人固定是已登录管理员；撤销粒度是「删掉那个 Agent」。
   这几项留给后续里程碑，也因此它降低的是「发钥匙」的门槛，没有引入新的权限面。

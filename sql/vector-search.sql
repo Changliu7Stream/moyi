@@ -101,6 +101,29 @@ DROP POLICY IF EXISTS "service_role full access" ON public.oauth_codes;
 CREATE POLICY "service_role full access" ON public.oauth_codes
   FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+-- 技能：公共只读层的存储。旧库升级时这份脚本负责补建。
+CREATE TABLE IF NOT EXISTS public.skills (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text        NOT NULL UNIQUE,
+  description text        NOT NULL DEFAULT '',
+  content     text        NOT NULL,
+  status      text        NOT NULL DEFAULT 'draft'
+                            CHECK (status IN ('published', 'draft', 'rejected')),
+  origin      text        NOT NULL DEFAULT 'console'
+                            CHECK (origin IN ('console', 'agent', 'url')),
+  source_url  text,
+  sha256      text        NOT NULL,
+  agent_id    uuid        REFERENCES public.agents(id) ON DELETE SET NULL,
+  fetched_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS skills_status_idx ON public.skills (status, updated_at DESC);
+ALTER TABLE public.skills ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "service_role full access" ON public.skills;
+CREATE POLICY "service_role full access" ON public.skills
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+
 -- 一行一个键。setup_locked 这一行同时充当「已安装」的 CAS 锁。
 CREATE TABLE IF NOT EXISTS public.settings (
   key         text        PRIMARY KEY,

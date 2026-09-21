@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-ver="v3.3">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>技能层 · 墨忆文档</title>
+<meta name="description" content="墨忆的技能层（Skill Registry）：所有 Agent 共享的公共只读 SKILL.md 说明文档。它和私有记忆分属两张表，Agent 只能读已发布、只能提草稿，发布是人工动作；以及为什么这样设计——能往公共层写等价于能对所有 Agent 下指令。">
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="d-wrap">
+<main>
+<p class="crumb">使用 / Skills</p>
+<h1>技能层</h1>
+<p class="lede">技能是一份份 <b>SKILL.md 风格的说明文档</b>，所有 Agent 读同一份公共层，用现成的连接 Key 就能读。它和记忆是两层：<b>技能是公共只读，记忆是私有可写</b>。Agent 能往技能层提交的只有<b>草稿</b>，放行与否永远是人点的。</p>
+
+<div class="box info">
+<p class="box-t">为什么要有这一层</p>
+<p>MCP 让 Agent 能连上墨忆读写记忆，但「怎么用一个工具、遵守什么流程」这类<b>共享知识</b>没有地方沉淀。技能层就是给这类说明书准备的：部署者放一次，接上来的每个 Agent 都能读到，不用每台客户端各配一份。它对齐业界 <code>SKILL.md</code> 约定（YAML frontmatter 里 <code>name</code> + <code>description</code>），墨忆本身<b>不生成技能正文、不做检索打分</b>——它是一个带审核闸门的存储与读取层。</p>
+</div>
+
+<h2 id="two-layer">两层模型：公共只读 vs 私有可写</h2>
+<p>这是理解技能层的关键。技能与记忆<b>物理上就是两张表</b>，没有任何外键或查询交集：</p>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>记忆 <code>memories</code></th><th>技能 <code>skills</code></th></tr></thead>
+<tbody>
+<tr><td>归属</td><td>每个 Agent 一份，<code>agent_id</code> 硬隔离</td><td>全局共享，所有 Agent 读同一份</td></tr>
+<tr><td>可写性</td><td>Agent 自由写</td><td>Agent 只能写<b>自己的草稿</b>，发布须人工</td></tr>
+<tr><td>作用域函数</td><td>受 <a href="agents.html#global">全局记忆开关</a>影响读范围</td><td>不走那套作用域，开关<b>碰不到</b>技能</td></tr>
+<tr><td>语义检索 / 衰减 / 去重</td><td>都会处理</td><td>都不参与，技能不是记忆</td></tr>
+</tbody>
+</table>
+</div>
+<p>所以「每个 Agent 各自独立记忆、互不干扰」这件事在技能层<b>不需要额外实现</b>——技能根本不流进 <code>memories</code>，检索打分、衰减降级、语义去重、全局记忆开关全都碰不到它。</p>
+
+<h2 id="lifecycle">生命周期：published / draft / rejected</h2>
+<p>一条技能只有一个 <code>status</code> 字段，三态：</p>
+<ul>
+<li><b><code>published</code></b>：人（管理台）放的，或 Agent 提交后经人审核放行的。出现在所有 Agent 的列表里。</li>
+<li><b><code>draft</code></b>：Agent 自己生成的。只有提交者自己能读到，必须有人在管理台点「发布」才进入公共层。</li>
+<li><b><code>rejected</code></b>：人否决过的。保留正文供追溯，但不再出现在任何列表里。</li>
+</ul>
+<div class="box warn">
+<p class="box-t">这道闸门是本功能的安全边界</p>
+<p>能往公共层写，等价于<b>能对所有 Agent 下指令</b>——这是提示注入的放大器。墨忆的处置是把写权限收到最小：<code>status</code>、<code>origin</code>、<code>agent_id</code> 三个字段<b>永远由服务端赋值</b>，Agent 提交时无论传什么都不认，一律落成 <code>draft</code>。别人未发布的草稿对你<b>返回 404（不是 403）</b>，连「它存在」都不暴露，免得变成探针。</p>
+</div>
+
+<h2 id="agent-view">Agent 侧：三个工具 + 一组 resources</h2>
+<p>Agent 用现成的那把 Key 访问技能层，HTTP（<code>/api/mcp</code>）和 stdio 两种 MCP 形态都有。工具规范名共三个：</p>
+<div class="tw">
+<table>
+<thead><tr><th>工具</th><th>作用</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>skill_list</code></td><td>列出可见技能</td><td>返回全部 <code>published</code> + 调用者自己的 <code>draft</code></td></tr>
+<tr><td><code>skill_read</code></td><td>读某一份的正文</td><td>按 name 取，只能读到 published 或自己的草稿</td></tr>
+<tr><td><code>skill_propose</code></td><td>提交一份草稿</td><td>正文必填；name/description 可从 frontmatter 推断，推不出则如实报错</td></tr>
+</tbody>
+</table>
+</div>
+<p>除此之外，MCP 的 <b>resources</b> 原语也接上了：每份可见技能暴露成 <code>moyi-skill://&lt;name&gt;</code> 资源（<code>uri</code> + <code>name</code> + <code>title</code> + <code>description</code> + <code>mimeType: text/markdown</code>）。<code>resources/list</code> 回清单，<code>resources/read</code> 按 uri 回正文，找不到回错误码 <code>-32002</code>。没跑迁移（缺 <code>skills</code> 表）时，<code>resources/list</code> <b>降级为空清单</b>而不是报错——让客户端在技能层尚未就位时也能正常连上。</p>
+<p>对应 REST 端点（<code>/api/skills</code>）逐条清单见 <a href="api.html#skills-api">接口清单页</a>。</p>
+
+<h2 id="console">管理台：公共层的唯一写入口</h2>
+<p>发布、审核、从 URL 导入都只在管理台「技能」页发生，权限取「任一已登录管理员」（审核是运维动作，不是超管专属）。要点：</p>
+<ul>
+<li><b>从 URL 导入</b>：粘贴一个 SKILL.md 的链接，服务端抓取、自动识别 <code>name</code>/<code>description</code> 并填入表单。「预览」只看前 600 字，<b>不落库</b>；确认无误再点「整份导入」，由服务端<b>重新完整抓取</b>，前端不会存截断的正文。</li>
+<li><b>人直建即发布</b>：管理员手工填正文保存，直接进 <code>published</code>——因为写公共层的责任由这个人承担。</li>
+<li><b>审核草稿</b>：Agent 提交的草稿在这里看，点「发布」进公共层，点「驳回」落 <code>rejected</code>。</li>
+<li><b>刷新</b>：有 <code>source_url</code> 的技能可一键回源；服务端比对新旧 <code>sha256</code>，内容没变则不写库。</li>
+</ul>
+<p>管理台侧端点（<code>/api/console/skills/*</code>）逐条清单见 <a href="api.html#console-skills">接口清单页</a>。</p>
+
+<h2 id="fetch">URL 抓取的 SSRF 控制</h2>
+<p>「从 URL 导入 / 刷新」要去抓一个远程地址，这是最容易招 SSRF 的地方。墨忆用的是<b>域名白名单</b>，而不是「解析出 IP 后校验 IP」：</p>
+<div class="box">
+<p class="box-t">为什么不用 IP 校验</p>
+<p>要在零依赖前提下用 IP 校验真正防住 DNS rebinding，必须自己拿 <code>net</code>/<code>tls</code> 按已验证的 IP 建连、手搓整个 HTTP 客户端——那等于把漏洞面从「想不周」换成「写不对」，风险更高。白名单把可达主机收敛成一个<b>封闭集合</b>，SSRF 面因而不存在。</p>
+</div>
+<p>白名单细节（默认只放 GitHub 原始内容域，可用 <code>MOYI_SKILL_URL_HOSTS</code> 扩展，见<a href="env.html#skill">环境变量页</a>）：</p>
+<ul>
+<li><b>每一跳重定向都重新过白名单</b>：302 跳内网是这类抓取最省事的绕法，逐跳校验才堵得住；最多跟 3 跳。</li>
+<li><b>只允许默认端口</b>，非 80/443 直接拒。</li>
+<li>子域条目（如 <code>example.com</code>）放行 <code>a.example.com</code> 但<b>要求 https</b>；只有精确写出的主机名才允许明文 http——这是本地自托管 Gitea 与测试用的形态。</li>
+<li>GitHub 的 <code>blob</code> 链接自动改写成 <code>raw</code> 域（否则抓到的是带高亮的网页）；<code>tree</code>（目录）链接<b>明确拒绝</b>，语义不清。</li>
+<li>正文上限 <b>200KB</b>，超限直接拒不做截断——截断后的 markdown 语义可能已经反了，比拒收更危险。</li>
+</ul>
+
+<h2 id="deploy">启用与迁移</h2>
+<p>技能层随 <code>v3.3</code> 的 schema 一起提供，启用只需两步：</p>
+<div class="flow">
+<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 <code>skills</code> 表（第八张）</span></div>
+<div class="flow-arrow">→</div>
+<div class="flow-step"><span class="no">2</span><b>（可选）设白名单</b><span>私有 GitLab / Gitea 才需要 <code>MOYI_SKILL_URL_HOSTS</code>；只用 GitHub 可跳过</span></div>
+</div>
+<p>没跑迁移时服务照常起：<code>/api/skills</code> 会如实回 409（缺表），MCP 的 <code>resources/list</code> 降级为空清单。表结构见 <a href="schema.html">数据库结构</a> 的 <code>skills</code> 一节。注意 <code>agent_id</code> 是 <code>ON DELETE SET NULL</code>——删掉一个 Agent 不会连带销毁它提交的、已被别人发布的技能正文。</p>
+
+<div class="box">
+<p class="box-t">这一版刻意没做的</p>
+<p>墨忆<b>不替你生成技能正文</b>（不引 LLM，保持零依赖），也不对技能做向量检索或相似度合并——它是存储与读取层，不是第二个记忆系统。技能之间<b>不支持递归抓取整个仓库</b>（只收单个 .md），也不支持动态注册式的任意源。这些都留给后续里程碑。</p>
+</div>
+
+</main>
+</div>
+<script src="assets/docs.js"></script>
+</body>
+</html>

@@ -24,6 +24,7 @@
     { group: '使用', items: [
       { href: 'console.html', text: '引导安装与管理台' },
       { href: 'agents.html',  text: 'Agent 与全局记忆' },
+      { href: 'skills.html',  text: '技能层' },
       { href: 'api.html',     text: '接口清单' }
     ]},
     { group: '底层', items: [

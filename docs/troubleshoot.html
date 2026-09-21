@@ -111,7 +111,7 @@ lsof -i :3906</code></pre>
 <p>解决：</p>
 <ol>
 <li>确认你跑的是 <code>sql/00-schema.sql</code> + <code>docker/init/10-roles.sql</code>，不是 <code>sql/vector-search.sql</code>。</li>
-<li>如果已经跑错了，关 RLS：<code>ALTER TABLE public.memories DISABLE ROW LEVEL SECURITY;</code>（七张表都要关），或者删库重建（<code>docker compose down -v</code> 删数据卷，重新 <code>up</code>）。</li>
+<li>如果已经跑错了，关 RLS：<code>ALTER TABLE public.memories DISABLE ROW LEVEL SECURITY;</code>（八张表都要关），或者删库重建（<code>docker compose down -v</code> 删数据卷，重新 <code>up</code>）。</li>
 </ol>
 
 <hr>

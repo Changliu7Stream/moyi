@@ -132,6 +132,37 @@ CREATE TABLE IF NOT EXISTS public.oauth_codes (
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- ═══════════════════════════════════════════════════
+-- skills 表（技能：公共只读层，与 memories 的私有可写层彻底分开）
+-- 一份 markdown + 一行元数据。技能不会进 memories，所以检索打分、衰减、
+-- 去重、全局记忆开关都碰不到它，Agent 之间的记忆隔离也不需要为它让路。
+-- status 三态是这功能的安全边界：Agent 自己生成的只能是 draft，
+-- 必须人在管理台点「发布」才会进入所有 Agent 都能读到的公共层。
+-- agent_id 不设级联删除：删 Agent 不该顺手毁掉一份已经发布的公共文档，
+-- 因此可空且仅作为「谁提交的」溯源记录。
+-- ═══════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public.skills (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- slug，同时是 MCP 资源名（moyi-skill://<name>）；服务层限 [a-z0-9._-]
+  name        text        NOT NULL UNIQUE,
+  description text        NOT NULL DEFAULT '',
+  content     text        NOT NULL,
+  status      text        NOT NULL DEFAULT 'draft'
+                            CHECK (status IN ('published', 'draft', 'rejected')),
+  -- console=人放的, agent=Agent 提交的, url=从地址抓取来的
+  origin      text        NOT NULL DEFAULT 'console'
+                            CHECK (origin IN ('console', 'agent', 'url')),
+  source_url  text,
+  -- 正文的 sha256：刷新时判断「有没有变」，也用于人工核对
+  sha256      text        NOT NULL,
+  -- 由哪个 Agent 提交（draft 审核与「只改自己的」判定用），非归属、不级联
+  agent_id    uuid        REFERENCES public.agents(id) ON DELETE SET NULL,
+  fetched_at  timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS skills_status_idx ON public.skills (status, updated_at DESC);
+
 -- 一行一个键。setup_locked 这一行同时充当「已安装」的 CAS 锁。
 CREATE TABLE IF NOT EXISTS public.settings (
   key         text        PRIMARY KEY,

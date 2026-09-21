@@ -39,8 +39,8 @@ USING hnsw (embedding vector_cosine_ops)    <span class="c">-- HNSW 索引，加
 <table>
 <thead><tr><th>文件</th><th>建什么</th><th>幂等？</th></tr></thead>
 <tbody>
-<tr><td><code>sql/00-schema.sql</code></td><td>七张表（<code>agents / memories / admins / admin_sessions / oauth_tokens / oauth_codes / settings</code>）+ 装 <code>vector</code> 扩展 + HNSW 索引 + <code>match_memories</code> / <code>increment_access</code> 两个 RPC。其中 <code>oauth_*</code> 两张仅开启 <a href="env.html#oauth">MCP 浏览器授权</a> 时才会被读写</td><td>是</td></tr>
-<tr><td><code>sql/vector-search.sql</code></td><td>给七张表 <b>开 RLS</b>、只放行 <code>service_role</code>；并以 <code>IF NOT EXISTS</code> 兜底重建三张控制台表和两张 oauth 表、重建两个 RPC（为「表已存在」的旧库升级准备）</td><td>是</td></tr>
+<tr><td><code>sql/00-schema.sql</code></td><td>八张表（<code>agents / memories / skills / admins / admin_sessions / oauth_tokens / oauth_codes / settings</code>）+ 装 <code>vector</code> 扩展 + HNSW 索引 + <code>match_memories</code> / <code>increment_access</code> 两个 RPC。其中 <code>oauth_*</code> 两张仅开启 <a href="env.html#oauth">MCP 浏览器授权</a> 时才会被读写</td><td>是</td></tr>
+<tr><td><code>sql/vector-search.sql</code></td><td>给八张表 <b>开 RLS</b>、只放行 <code>service_role</code>；并以 <code>IF NOT EXISTS</code> 兜底重建三张控制台表和两张 oauth 表、重建两个 RPC（为「表已存在」的旧库升级准备）</td><td>是</td></tr>
 </tbody>
 </table>
 </div>

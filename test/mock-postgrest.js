@@ -9,7 +9,7 @@ const crypto = require('crypto');
 let _seq = 0;
 const nextTs = () => new Date(Date.now() - (1000 - (_seq++))).toISOString();
 
-const db = { agents: [], memories: [], admins: [], admin_sessions: [], settings: [], oauth_tokens: [], oauth_codes: [] };
+const db = { agents: [], memories: [], admins: [], admin_sessions: [], settings: [], oauth_tokens: [], oauth_codes: [], skills: [] };
 // 引导安装那一段测试需要一个「干净的空实例」，而它跑在最后，
 // 此时主 mock 里已经有几十个 agent 和上百条记忆了。
 // 只在这几个表上支持 ?__clear=1（记忆与 agent 清不得，D2 的除名用例还指着它们）。
@@ -22,6 +22,7 @@ const UNIQUE = {
   settings: [['key', r => r.key]],
   oauth_tokens: [['token_hash', r => r.token_hash]],
   oauth_codes: [['code_hash', r => r.code_hash]],
+  skills: [['name', r => r.name]],
 };
 let FAIL_MODE = false;
 function send401(res) {
@@ -215,7 +216,7 @@ const server = http.createServer((req, res) => {
       const rows = Array.isArray(body0) ? body0 : [body0];
       const inserted = [];
       for (const body of rows) {
-        if (!body.id && ['agents', 'admins', 'admin_sessions', 'oauth_tokens'].includes(t)) body.id = crypto.randomUUID();
+        if (!body.id && ['agents', 'admins', 'admin_sessions', 'oauth_tokens', 'skills'].includes(t)) body.id = crypto.randomUUID();
         if (t === 'admins' && body.disabled === undefined) body.disabled = false;
         if (t === 'admins' && body.session_version === undefined) body.session_version = 0;
         if (t === 'oauth_tokens' && body.revoked === undefined) body.revoked = false;

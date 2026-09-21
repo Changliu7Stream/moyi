@@ -39,6 +39,7 @@
 <tr><td><code>mcp-server.js</code></td><td>MCP 协议的 stdio 服务端</td><td>让 Claude / 其他 MCP 客户端直接连</td></tr>
 <tr><td><code>lib/mcp-http.js</code></td><td>MCP 的 Streamable HTTP 协议层</td><td>由 <code>/api/mcp</code> 挂载，Bearer 鉴权，免装 Node 直接远程接</td></tr>
 <tr><td><code>lib/oauth.js</code></td><td>MCP 浏览器授权（OAuth 2.1 子集）协议层</td><td>授权码 + PKCE；默认关闭，配 <code>MOYI_OAUTH_CLIENT_ID</code> 才启用</td></tr>
+<tr><td><code>lib/skills.js</code></td><td>技能层：公共只读的 SKILL.md 存储与 URL 抓取</td><td>与记忆分属两张表；Agent 只能读 published、只能提 draft，发布须人工</td></tr>
 <tr><td><code>api/index.js</code></td><td>Vercel Serverless 入口</td><td>薄壳，转调 <code>lib/moyi.js</code></td></tr>
 <tr><td><code>public/</code></td><td>水墨风前端：账本页 + 管理台页</td><td>零框架，纯 HTML/CSS/JS</td></tr>
 <tr><td><code>sql/</code></td><td>两套迁移脚本（自托管 / Supabase）</td><td>同一套表结构，权限模型不同</td></tr>

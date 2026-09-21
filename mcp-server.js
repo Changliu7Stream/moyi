@@ -217,6 +217,34 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'skill_propose',
+    description: '把你摸索出的一份操作手册/流程提交成【技能草稿】。草稿只有你自己看得到，需管理员在管理台点"发布"后才进入所有 Agent 共享的公共技能层。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '技能正文（Markdown，上限 200KB）。' },
+        name: { type: 'string', description: '技能标识（小写字母数字与 . _ -）。不传则由正文推断。' },
+        description: { type: 'string', description: '一句话用途描述。不传则由正文推断。' },
+        source_url: { type: 'string', description: '可选：该技能的原始出处链接，仅作溯源，不会替你抓取。' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'skill_list',
+    description: '列出可读的技能：公共层已发布的全部技能，外加你自己提交、仍是草稿的那些。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'skill_read',
+    description: '按名称读取一份技能的完整 Markdown 正文。',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: '技能标识（skill_list 返回的 name）。' } },
+      required: ['name'],
+    },
+  },
 ];
 
 // ── HTTP 请求 ──────────────────────────────────────────
@@ -473,6 +501,39 @@ async function executeTool(name, args) {
       };
     }
 
+    case 'skill_propose': {
+      const body = { content: args.content, name: args.name, description: args.description, url: args.source_url };
+      const res = await apiRequest('/api/skills', 'POST', body);
+      if (res.error) return { content: [{ type: 'text', text: '提交失败：' + res.error + (res.hint ? '（' + res.hint + '）' : '') }], isError: true };
+      const s = res.skill || {};
+      return { content: [{ type: 'text', text: '已提交为技能草稿（仅你可见）。\n  名称: ' + (s.name || '-')
+        + '\n  说明: ' + (s.description || '-') + '\n\n' + (res.note || '') }] };
+    }
+
+    case 'skill_list': {
+      const res = await apiRequest('/api/skills', 'GET');
+      if (res.error) return { content: [{ type: 'text', text: '读取失败: ' + res.error + (res.hint ? '（' + res.hint + '）' : '') }], isError: true };
+      const lines = [];
+      const pub = res.skills || [], dr = res.drafts || [];
+      if (pub.length) lines.push('公共技能（已发布，所有 Agent 共享）：',
+        ...pub.map(s => '  · ' + s.name + ' — ' + (s.description || '（无说明）') + '  [' + s.uri + ']'));
+      if (dr.length) lines.push('', '你的草稿（仅你可见，待管理员发布）：',
+        ...dr.map(s => '  · ' + s.name + ' — ' + (s.description || '（无说明）')));
+      return { content: [{ type: 'text', text: lines.join('\n') || '当前没有可读的技能。' }] };
+    }
+
+    case 'skill_read': {
+      const n = String(args.name || '');
+      if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(n)) {
+        return { content: [{ type: 'text', text: '技能名格式不合法（只允许小写字母、数字与 . _ -）。' }], isError: true };
+      }
+      const res = await apiRequest('/api/skills/' + encodeURIComponent(n), 'GET');
+      if (res.error) return { content: [{ type: 'text', text: '读取失败: ' + res.error }], isError: true };
+      const s = res.skill || {};
+      return { content: [{ type: 'text', text: '技能 ' + (s.name || n) + '（' + s.status + '）\n  说明: '
+        + (s.description || '-') + (s.source_url ? '\n  出处: ' + s.source_url : '') + '\n\n' + (res.content || '') }] };
+    }
+
     default:
       return {
         content: [{ type: 'text', text: '未知工具: ' + name }],
@@ -509,6 +570,7 @@ async function handleMessage(msg) {
             },
             capabilities: {
               tools: {},
+              resources: {},
             },
           },
         });
@@ -541,11 +603,36 @@ async function handleMessage(msg) {
       }
 
       case 'resources/list': {
-        send({
-          jsonrpc: '2.0',
-          id: id,
-          result: { resources: [] },
-        });
+        // 技能层作为 MCP 资源暴露：uri = moyi-skill://<name>。
+        // 表还没建（未跑迁移）时回空清单而不是报错——资源列表在能力探测阶段
+        // 就会被调用，一个没启用技能功能的实例不该因此连不上。
+        const res = await apiRequest('/api/skills', 'GET').catch(() => null);
+        const items = [];
+        if (res && !res.error) {
+          for (const s of (res.skills || [])) {
+            items.push({ uri: s.uri || ('moyi-skill://' + s.name), name: s.name, title: s.name,
+              description: s.description || '', mimeType: 'text/markdown' });
+          }
+          for (const s of (res.drafts || [])) {
+            items.push({ uri: s.uri || ('moyi-skill://' + s.name), name: s.name,
+              title: s.name + '（草稿）', description: s.description || '', mimeType: 'text/markdown' });
+          }
+        }
+        send({ jsonrpc: '2.0', id: id, result: { resources: items } });
+        break;
+      }
+
+      case 'resources/read': {
+        const uri = String(params.uri || '');
+        const unknown = { jsonrpc: '2.0', id: id,
+          error: { code: -32002, message: 'Unknown resource: ' + uri } };
+        if (!uri.startsWith('moyi-skill://')) { send(unknown); break; }
+        const n = decodeURIComponent(uri.slice('moyi-skill://'.length));
+        if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(n)) { send(unknown); break; }
+        const res = await apiRequest('/api/skills/' + encodeURIComponent(n), 'GET');
+        if (!res || res.error || typeof res.content !== 'string') { send(unknown); break; }
+        send({ jsonrpc: '2.0', id: id, result: { contents: [{
+          uri: (res.skill && res.skill.uri) || uri, mimeType: 'text/markdown', text: res.content }] } });
         break;
       }
 

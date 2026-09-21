@@ -144,20 +144,34 @@
 </table>
 </div>
 
+<h3 id="skills-api">技能层（Agent 只读 + 提交草稿）</h3>
+<p>技能是所有 Agent 共享的<b>公共只读层</b>，与私有的记忆分属两张表。Agent 凭自己的 Key 能读到 <code>published</code> 的全部技能，也能提交<b>草稿</b>——但 <code>status</code>/<code>origin</code>/<code>agent_id</code> 一律服务端赋值，Agent 提交永远落在 <code>draft</code>，须人在管理台放行。原理见 <a href="skills.html">技能层页</a>。</p>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/skills</code></td><td>X-Moyi-Key / Bearer</td><td>无</td><td><code>{skills:[published], drafts:[自己的草稿], note}</code></td><td>200；401；409（缺 skills 表）</td><td><code>lib/moyi.js:1456-1467</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/skills</code></td><td>X-Moyi-Key / Bearer</td><td><code>content</code>（必填）、<code>name?</code>、<code>description?</code>、<code>url?</code>（仅存为 source_url，<b>不抓取</b>）</td><td><code>{skill, status:'draft', note}</code>，强制 origin=agent</td><td>201；400；401；409（同名/缺表）</td><td><code>lib/moyi.js:1470-1491</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/skills/:name</code></td><td>X-Moyi-Key / Bearer</td><td><code>:name</code> slug</td><td>已发布或自己的草稿：<code>{skill, content}</code></td><td>200；401；<b>404</b>（他人的草稿按不存在处理，不留存在性探针）；409（缺表）</td><td><code>lib/moyi.js:1494-1505</code></td></tr>
+</tbody>
+</table>
+</div>
+
 <h3 id="mcp-http">MCP over HTTP（/api/mcp）</h3>
 <p>Agent 面还有一条特殊路径 <code>/api/mcp</code>：它是 MCP 协议的 <b>Streamable HTTP</b> 端点，客户端把 JSON-RPC 请求体直接 POST 过来，服务端在<b>完成 X-Moyi-Key / Bearer 认证之后</b>才派发到工具执行。工具实现复用同面的 REST 端点（内部自调用 <code>route</code>），逻辑与 REST 一份，作用域与鉴权规则完全一致。</p>
 <div class="tw">
 <table>
 <thead><tr><th>方法</th><th>路径</th><th>认证</th><th>请求体</th><th>响应</th><th>状态码</th><th>位置</th></tr></thead>
 <tbody>
-<tr><td><span class="badge post">POST</span></td><td><code>/api/mcp</code></td><td>X-Moyi-Key 或 Bearer</td><td>JSON-RPC 2.0 对象或数组，<code>method</code> ∈ <code>initialize</code>/<code>ping</code>/<code>tools/list</code>/<code>tools/call</code>/<code>resources/list</code>/<code>prompts/list</code>/notifications</td><td>JSON-RPC 响应（或响应数组）；全为通知时无 body</td><td>200；202（纯通知）；400（非法体）；401；405（GET/PUT/…）</td><td><code>lib/moyi.js:1142-1171, 1281-1284</code>；协议层 <code>lib/mcp-http.js</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/mcp</code></td><td>X-Moyi-Key 或 Bearer</td><td>JSON-RPC 2.0 对象或数组，<code>method</code> ∈ <code>initialize</code>/<code>ping</code>/<code>tools/list</code>/<code>tools/call</code>/<code>resources/list</code>/<code>resources/read</code>/<code>prompts/list</code>/notifications</td><td>JSON-RPC 响应（或响应数组）；全为通知时无 body</td><td>200；202（纯通知）；400（非法体）；401；405（GET/PUT/…）</td><td><code>lib/moyi.js:1142-1171, 1281-1284</code>；协议层 <code>lib/mcp-http.js</code></td></tr>
 <tr><td><span class="badge get">GET</span></td><td><code>/api/mcp</code></td><td>—</td><td>—</td><td>—</td><td>405（本端点仅支持 POST）</td><td><code>lib/moyi.js:1143-1146</code></td></tr>
 </tbody>
 </table>
 </div>
 <div class="box info">
-<p class="box-t">HTTP 形态暴露的工具</p>
-<p>规范名共 10 个：<code>memory_save</code>、<code>memory_recall</code>、<code>memory_search</code>、<code>memory_forget</code>、<code>memory_graph_query</code>、<code>memory_stats</code>、<code>memory_health</code>、<code>memory_scope_list</code>、<code>memory_audit_log</code>（<b>master only</b>）。<code>tools/list</code> 只回这 10 个规范名；<code>tools/call</code> 接受若干历史别名（<code>remember</code> / <code>retrieve_memory</code> / <code>search_memory</code> / <code>forget</code> / <code>memory_graph</code> 等），别名不重复列出。</p>
+<p class="box-t">HTTP 形态暴露的工具与资源</p>
+<p>工具规范名共 12 个：记忆侧 <code>memory_save</code>、<code>memory_recall</code>、<code>memory_search</code>、<code>memory_forget</code>、<code>memory_graph_query</code>、<code>memory_stats</code>、<code>memory_health</code>、<code>memory_scope_list</code>、<code>memory_audit_log</code>（<b>master only</b>）；技能侧 <code>skill_propose</code>、<code>skill_list</code>、<code>skill_read</code>。<code>tools/list</code> 只回规范名；<code>tools/call</code> 接受若干历史别名（<code>remember</code> / <code>retrieve_memory</code> / <code>search_memory</code> / <code>forget</code> / <code>memory_graph</code> 等），别名不重复列出。</p>
+<p><code>initialize</code> 现在声明 <code>capabilities: { tools: {}, resources: {} }</code>。<code>resources/list</code> 把已发布技能（外加调用者自己的草稿）暴露成 <code>moyi-skill://&lt;name&gt;</code> 资源，<code>resources/read</code> 按 uri 回 <code>{contents:[{uri, mimeType:"text/markdown", text}]}</code>，找不到回 <code>-32002</code>；缺 <code>skills</code> 表时 <code>resources/list</code> 降级为空清单而非报错。</p>
 </div>
 
 <h2 id="oauth">浏览器授权端点（/api/oauth/* 与 /.well-known/*）</h2>
@@ -215,6 +229,24 @@
 <tr><td><span class="badge post">POST</span></td><td><code>/api/console/agents</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>name</code>（≤64）</td><td><code>{id, name, role, api_key, note, mcp_config}</code></td><td>201；400；401</td><td><code>lib/moyi.js:993-1012</code></td></tr>
 <tr><td><span class="badge post">POST</span></td><td><code>/api/console/agents/:id/reset-key</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{id, name, api_key, note, mcp_config}</code></td><td>200；400；401；404</td><td><code>lib/moyi.js:1013-1023</code></td></tr>
 <tr><td><span class="badge del">DEL</span></td><td><code>/api/console/agents/:id</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{deleted, id}</code></td><td>200；400；401</td><td><code>lib/moyi.js:1024-1033</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="console-skills">技能管理（公共层的唯一写入口）</h3>
+<p>权限取「任一已登录管理员」，与 Agent 发号同级——审核发布是运维动作，不是超管专属策略。真正要挡的是 Agent 侧自助发布，那已由 Agent 面 <code>status</code> 服务端赋值挡住。列表<b>不含正文</b>，要读正文需逐条走单篇接口。</p>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>需超管</th><th>需头</th><th>关键参数</th><th>成功响应</th><th>状态码</th><th>位置</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/skills</code></td><td>会话</td><td>否</td><td>否</td><td>无</td><td><code>{skills(全量含 draft/rejected), counts, fetch_hosts}</code></td><td>200；401；409（缺表）</td><td><code>lib/moyi.js:1089-1100</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/skills/preview</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>url</code></td><td>抓取+推断，<b>不落库</b>：<code>{name, description, source_url, chars, bytes, content_head(前600字), note}</code></td><td>200；400（白名单外/非文本）；401</td><td><code>lib/moyi.js:1103-1114</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/skills</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>content</code> 或 <code>source_url</code>（带 url 且 content 空则现抓并忽略传来的 content）、<code>name?</code>、<code>description?</code></td><td>人直建即 <code>published</code>：<code>{skill}</code></td><td>201；400；401；409</td><td><code>lib/moyi.js:1116-1147</code></td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/console/skills/:id</code></td><td>会话</td><td>否</td><td>否</td><td><code>:id</code> UUID</td><td><code>{skill}</code>（含正文，给管理员一条 Agent-key 之外的读通道）</td><td>200；401；404</td><td><code>lib/moyi.js:1157-1163</code></td></tr>
+<tr><td><span class="badge patch">PATCH</span></td><td><code>/api/console/skills/:id</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>content?</code>（改则重算 sha256）、<code>description?</code></td><td><code>{skill}</code></td><td>200；400；401；404</td><td><code>lib/moyi.js:1194-1208</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/skills/:id/publish</code> · <code>/reject</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{skill}</code>（status 改 published / rejected）</td><td>200；401；404</td><td><code>lib/moyi.js:1186-1192</code></td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/console/skills/:id/refresh</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID（须有 source_url）</td><td>变了 <code>{changed:true, skill}</code>；sha256 一致 <code>{changed:false}</code> 不写库</td><td>200；400（无来源/抓取失败）；401；404</td><td><code>lib/moyi.js:1165-1184</code></td></tr>
+<tr><td><span class="badge del">DEL</span></td><td><code>/api/console/skills/:id</code></td><td>会话</td><td>否</td><td><b>是</b></td><td><code>:id</code> UUID</td><td><code>{deleted, id}</code></td><td>200；400；401；404</td><td><code>lib/moyi.js:1211-1217</code></td></tr>
 </tbody>
 </table>
 </div>

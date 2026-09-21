@@ -97,13 +97,14 @@ function bootLogin(st) {
 
 // ── 面板 ─────────────────────────────────────────────
 function switchPane(name) {
-  ['agents', 'users', 'sessions', 'settings'].forEach(function (n) {
+  ['agents', 'skills', 'users', 'sessions', 'settings'].forEach(function (n) {
     $('cp-' + n).classList.toggle('hidden', n !== name);
   });
   document.querySelectorAll('.c-tabs .tab-btn').forEach(function (b) {
     b.classList.toggle('active', b.getAttribute('data-cp') === name);
   });
   if (name === 'agents') loadAgents();
+  if (name === 'skills') loadSkills();
   if (name === 'users') loadAdmins();
   if (name === 'sessions') loadSessions();
   if (name === 'settings') loadSettings();
@@ -150,6 +151,192 @@ function delAgent(id, name) {
   if (!confirm('除名「' + name + '」会连带删除它的记忆，且不可恢复。确认？')) return;
   api('/agents/' + encodeURIComponent(id), 'DELETE', {}).then(loadAgents)
     .catch(function (e) { alert(e.message); });
+}
+
+// ── 技能层 ───────────────────────────────────────────
+/*
+ * 这一页是公共层的唯一写入口，所以它的责任也被刻意收窄：
+ *  - 列表不含正文（服务端就不返回 content），要看正文必须逐条「查看」再拉一次。
+ *    这样「一眼扫过 200 条技能」不会顺手把 200 份指令读进编辑器里改。
+ *  - 只有「发布」这一个动作能让技能对所有 Agent 生效，所以它是独立按钮，
+ *    不与保存合并 —— 保存草稿和放行发布是两件事。
+ */
+var SK_FILTER = '';
+
+function loadSkills() {
+  api('/skills').then(function (d) {
+    $('skLocked').classList.add('hidden');
+    var hosts = d.fetch_hosts || [];
+    $('skHosts').textContent = '只允许白名单内的主机：' + (hosts.join('、') || '（未配置）')
+      + '。要接内部 GitLab，请在服务端设 MOYI_SKILL_URL_HOSTS。';
+    var c = d.counts || {};
+    document.querySelectorAll('#skFilter .chip').forEach(function (b) {
+      var k = b.getAttribute('data-sk');
+      var n = k ? (c[k] || 0) : (d.skills || []).length;
+      if (!b.getAttribute('data-label')) b.setAttribute('data-label', b.textContent);
+      b.textContent = b.getAttribute('data-label') + ' (' + n + ')';
+    });
+    renderSkills(d.skills || []);
+  }).catch(function (e) {
+    $('skList').innerHTML = '';
+    say($('skLocked'), e.status === 409
+      ? '未找到 skills 表：请先执行 sql/00-schema.sql（Supabase 还要执行 sql/vector-search.sql）后重启。'
+      : e.message, false);
+    $('skLocked').classList.remove('hidden');
+  });
+}
+
+var ORIGIN_CN = { console: '管理台', agent: 'Agent 提交', url: 'URL 导入' };
+
+function renderSkills(all) {
+  var rows = all.filter(function (s) { return !SK_FILTER || s.status === SK_FILTER; });
+  var html = rows.map(function (s) {
+    var badge = s.status === 'published' ? '<span class="c-badge on">已发布</span>'
+      : s.status === 'draft' ? '<span class="c-badge master">待审草稿</span>'
+      : '<span class="c-badge off">已否决</span>';
+    return '<div class="c-row">'
+      + '<div class="c-row-main"><strong>' + esc(s.name) + '</strong>' + badge
+      + '<span class="c-badge">' + esc(ORIGIN_CN[s.origin] || s.origin) + '</span></div>'
+      + '<div class="c-row-meta">' + esc(s.description || '（无描述）').slice(0, 40) + '</div>'
+      + '<div class="c-row-act">'
+      + '<button class="btn btn-ghost btn-sm" data-sk-view="' + esc(s.id) + '">查看</button> '
+      + (s.status === 'published'
+        ? '<button class="btn btn-ghost btn-sm" data-sk-reject="' + esc(s.id) + '">下架</button> '
+        : '<button class="btn btn-primary btn-sm" data-sk-pub="' + esc(s.id) + '" data-nm="' + esc(s.name) + '">发布</button> ')
+      + (s.source_url ? '<button class="btn btn-ghost btn-sm" data-sk-refresh="' + esc(s.id) + '">重抓</button> ' : '')
+      + '<button class="btn btn-danger btn-sm" data-sk-del="' + esc(s.id) + '" data-nm="' + esc(s.name) + '">删除</button>'
+      + '</div></div>';
+  }).join('');
+  $('skList').innerHTML = html || '<p class="field-note">这里还没有技能。</p>';
+  $('skList').querySelectorAll('[data-sk-view]').forEach(function (b) {
+    b.addEventListener('click', function () { viewSkill(b.getAttribute('data-sk-view')); });
+  });
+  $('skList').querySelectorAll('[data-sk-pub]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('发布「' + b.getAttribute('data-nm') + '」后，所有 Agent 都能读到它，等价于向它们下指令。已读过正文？')) return;
+      skillAction(b.getAttribute('data-sk-pub'), 'publish');
+    });
+  });
+  $('skList').querySelectorAll('[data-sk-reject]').forEach(function (b) {
+    b.addEventListener('click', function () { skillAction(b.getAttribute('data-sk-reject'), 'reject'); });
+  });
+  $('skList').querySelectorAll('[data-sk-refresh]').forEach(function (b) {
+    b.addEventListener('click', function () { refreshSkill(b.getAttribute('data-sk-refresh')); });
+  });
+  $('skList').querySelectorAll('[data-sk-del]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('删除技能「' + b.getAttribute('data-nm') + '」？不可恢复。')) return;
+      api('/skills/' + encodeURIComponent(b.getAttribute('data-sk-del')), 'DELETE', {})
+        .then(loadSkills).catch(function (e) { alert(e.message); });
+    });
+  });
+}
+
+function skillAction(id, act) {
+  api('/skills/' + encodeURIComponent(id) + '/' + act, 'POST', {}).then(loadSkills)
+    .catch(function (e) { alert(e.message); });
+}
+
+function refreshSkill(id) {
+  api('/skills/' + encodeURIComponent(id) + '/refresh', 'POST', {}).then(function (d) {
+    alert(d.changed ? '已从来源地址更新正文。' : (d.note || '内容未变。'));
+    loadSkills();
+  }).catch(function (e) { alert(e.message); });
+}
+
+// 查看 = 把正文连同名称、描述一起填进编辑区（进入编辑态，保存走 PATCH）
+function viewSkill(id) {
+  api('/skills/' + encodeURIComponent(id)).then(function (d) {
+    var s = d.skill || {};
+    $('skEditing').value = s.id || '';
+    $('skName').value = s.name || '';
+    $('skName').readOnly = true;
+    $('skDesc').value = s.description || '';
+    $('skContent').value = s.content || '';
+    $('skSaveBtn').textContent = '保存修改';
+    $('skCancelBtn').classList.remove('hidden');
+    $('skNotice').textContent = '正在编辑「' + s.name + '」（' + (s.status === 'published' ? '已发布' : '草稿') + '）。改完点保存。';
+    $('skNotice').classList.remove('hidden');
+    $('skContent').scrollIntoView({ block: 'center' });
+  }).catch(function (e) { alert(e.message); });
+}
+
+function resetSkillForm() {
+  $('skEditing').value = '';
+  $('skName').value = ''; $('skName').readOnly = false;
+  $('skDesc').value = ''; $('skContent').value = '';
+  $('skSaveBtn').textContent = '发布这份技能';
+  $('skCancelBtn').classList.add('hidden');
+  $('skNotice').classList.add('hidden');
+  say($('skErr'), '', true);
+}
+
+function saveSkill() {
+  var editing = $('skEditing').value;
+  var payload = {
+    description: $('skDesc').value.trim(),
+    content: $('skContent').value,
+  };
+  var p;
+  if (editing) {
+    p = api('/skills/' + encodeURIComponent(editing), 'PATCH', payload);
+  } else {
+    payload.name = $('skName').value.trim();
+    p = api('/skills', 'POST', payload);
+  }
+  p.then(function () { resetSkillForm(); loadSkills(); })
+    .catch(function (e) { say($('skErr'), e.message, true); });
+}
+
+function previewSkillUrl() {
+  var url = $('skUrl').value.trim();
+  if (!url) { say($('skErr'), '先粘一个链接。', true); return; }
+  var btn = $('skPreviewBtn');
+  btn.disabled = true;
+  say($('skErr'), '', true);
+  api('/skills/preview', 'POST', { url: url }).then(function (d) {
+    btn.disabled = false;
+    resetSkillForm();
+    // 预览只回前 600 字，绝不能把它当正文存进库。这里只把 name/description
+    // 与整份链接填好，真正的正文由「整份导入」时服务端重新抓一次。
+    $('skName').value = d.name || '';
+    $('skDesc').value = d.description || '';
+    $('skSourceUrl').value = d.source_url || url;
+    $('skPrev').textContent = '抓到 ' + d.bytes + ' 字节，名称＝' + (d.name || '（待填）')
+      + '。核对无误后点「整份导入并发布」，服务端会按原链接重抓全文入库（预览只显示前 600 字）。';
+    $('skPrev').classList.remove('hidden');
+    $('skUrlSaveBtn').classList.remove('hidden');
+  }).catch(function (e) { btn.disabled = false; say($('skErr'), e.message, true); });
+}
+
+// 整份导入：只把 URL 交给服务端，由它现抓现存，前端不碰截断过的正文。
+function importSkillByUrl() {
+  var url = $('skSourceUrl').value || $('skUrl').value.trim();
+  if (!url) { say($('skErr'), '先抓取一个预览链接。', true); return; }
+  var payload = { source_url: url, name: $('skName').value.trim(), description: $('skDesc').value.trim() };
+  say($('skErr'), '', true);
+  api('/skills', 'POST', payload).then(function () {
+    $('skPrev').classList.add('hidden');
+    $('skUrlSaveBtn').classList.add('hidden');
+    $('skSourceUrl').value = ''; $('skUrl').value = '';
+    resetSkillForm(); loadSkills();
+  }).catch(function (e) { say($('skErr'), e.message, true); });
+}
+
+function wireSkills() {
+  $('skSaveBtn').addEventListener('click', saveSkill);
+  $('skCancelBtn').addEventListener('click', resetSkillForm);
+  $('skPreviewBtn').addEventListener('click', previewSkillUrl);
+  $('skUrlSaveBtn').addEventListener('click', importSkillByUrl);
+  document.querySelectorAll('#skFilter .chip').forEach(function (b) {
+    b.addEventListener('click', function () {
+      SK_FILTER = b.getAttribute('data-sk');
+      document.querySelectorAll('#skFilter .chip').forEach(function (x) {
+        x.classList.toggle('active', x === b);
+      });
+      loadSkills();
+    });
+  });
 }
 
 function loadAdmins() {
@@ -260,6 +447,7 @@ function wirePanel() {
   document.querySelectorAll('.c-tabs .tab-btn').forEach(function (b) {
     b.addEventListener('click', function () { switchPane(b.getAttribute('data-cp')); });
   });
+  wireSkills();
   $('agBtn').addEventListener('click', function () {
     var n = $('agName').value.trim();
     if (!n) { alert('先给 Agent 起个名字'); return; }

@@ -69,6 +69,7 @@
 
   <div class="c-tabs">
     <button class="tab-btn active" data-cp="agents">Agent</button>
+    <button class="tab-btn" data-cp="skills">技能</button>
     <button class="tab-btn" data-cp="users">管理员</button>
     <button class="tab-btn" data-cp="sessions">会话</button>
     <button class="tab-btn" data-cp="settings">设置</button>
@@ -90,6 +91,49 @@
         <pre class="mcp-cfg" id="agCfg"></pre>
       </div>
       <div id="agList" class="c-list"></div>
+    </section>
+
+    <!-- 技能 -->
+    <section id="cp-skills" class="c-pane hidden">
+      <h2 class="block-title">技能层</h2>
+      <p class="field-note">
+        技能是所有 Agent 共享的<b>只读说明书</b>，与各自独立的记忆分属两层。
+        Agent 可以用自己的 Key 提交草稿，但草稿只有它自己看得见；
+        只有在这里点「发布」，它才会进入公共层。<b>发布 = 给所有 Agent 下指令</b>，请先读正文。
+      </p>
+      <div id="skLocked" class="notice hidden"></div>
+      <div id="skNotice" class="notice hidden"></div>
+
+      <h2 class="block-title mt">按 URL 导入</h2>
+      <p class="field-note" id="skHosts">粘贴一个 .md 文件的直链，抓取后自动填名称与描述。</p>
+      <div class="c-form">
+        <input type="text" id="skUrl" class="auth-input" placeholder="https://github.com/owner/repo/blob/main/SKILL.md" autocomplete="off">
+        <button id="skPreviewBtn" class="btn btn-ghost">抓取预览</button>
+        <button id="skUrlSaveBtn" class="btn btn-primary hidden">整份导入并发布</button>
+      </div>
+      <p class="field-note hidden" id="skPrev"></p>
+      <input type="hidden" id="skSourceUrl" value="">
+
+      <h2 class="block-title mt">手工撰写 / 编辑</h2>
+      <div class="c-form">
+        <input type="text" id="skName" class="auth-input" placeholder="名称（小写字母数字与 . _ -）" autocomplete="off">
+        <input type="text" id="skDesc" class="auth-input" placeholder="一句话用途描述" autocomplete="off">
+      </div>
+      <textarea id="skContent" class="auth-input sk-ta" placeholder="技能正文（Markdown，可写 YAML frontmatter）" spellcheck="false"></textarea>
+      <input type="hidden" id="skEditing" value="">
+      <div class="c-form">
+        <button id="skSaveBtn" class="btn btn-primary">发布这份技能</button>
+        <button id="skCancelBtn" class="btn btn-ghost hidden">取消编辑</button>
+      </div>
+      <div id="skErr" class="auth-err hidden"></div>
+
+      <div class="c-tabs-sub" id="skFilter">
+        <button class="chip active" data-sk="">全部</button>
+        <button class="chip" data-sk="draft">待审草稿</button>
+        <button class="chip" data-sk="published">已发布</button>
+        <button class="chip" data-sk="rejected">已否决</button>
+      </div>
+      <div id="skList" class="c-list"></div>
     </section>
 
     <!-- 管理员 -->
