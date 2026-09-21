@@ -20,7 +20,7 @@
 <thead><tr><th></th><th>Agent 面</th><th>控制台面</th></tr></thead>
 <tbody>
 <tr><td><b>路径前缀</b></td><td><code>/api/*</code>（除 <code>/api/console/*</code>）</td><td><code>/api/console/*</code></td></tr>
-<tr><td><b>凭据</b></td><td><code>X-Moyi-Key: moyi_xxx</code> 或 <code>Authorization: Bearer moyi_xxx</code></td><td>用户名+口令 → 会话 Cookie（<code>moyi_session</code>）</td></tr>
+<tr><td><b>凭据</b></td><td><code>X-Moyi-Key: moyi_xxx</code> 或 <code>Authorization: Bearer moyi_xxx</code>（开启浏览器授权后还可 <code>Bearer moat_xxx</code>，见<a href="#oauth">浏览器授权一节</a>）</td><td>用户名+口令 → 会话 Cookie（<code>moyi_session</code>）</td></tr>
 <tr><td><b>密钥/口令存储</b></td><td>API Key 的 sha256</td><td>scrypt 哈希（自描述格式）</td></tr>
 <tr><td><b>谁在用</b></td><td>Agent 程序、MCP 客户端</td><td>人，在浏览器里</td></tr>
 <tr><td><b>能读记忆正文？</b></td><td>只能读自己那套（全局模式下可读他人）</td><td><b>读不到任何记忆正文</b></td></tr>
@@ -160,6 +160,25 @@
 <p>规范名共 10 个：<code>memory_save</code>、<code>memory_recall</code>、<code>memory_search</code>、<code>memory_forget</code>、<code>memory_graph_query</code>、<code>memory_stats</code>、<code>memory_health</code>、<code>memory_scope_list</code>、<code>memory_audit_log</code>（<b>master only</b>）。<code>tools/list</code> 只回这 10 个规范名；<code>tools/call</code> 接受若干历史别名（<code>remember</code> / <code>retrieve_memory</code> / <code>search_memory</code> / <code>forget</code> / <code>memory_graph</code> 等），别名不重复列出。</p>
 </div>
 
+<h2 id="oauth">浏览器授权端点（/api/oauth/* 与 /.well-known/*）</h2>
+<p>这一组是 <a href="agents.html#oauth">MCP 浏览器授权</a>（OAuth 2.1 精简子集：授权码 + PKCE）的认证面。它<b>早于 Agent Key 闸门</b>被派发——否则「拿 code 需要先有 key、拿 key 需要先有 code」的死结解不开。未配置 <code>MOYI_OAUTH_CLIENT_ID</code> 时 <code>/api/oauth/*</code> 全部回 <b>501</b>，等于整块功能关闭；两份发现文档仍可访问，但会指向一个不可用的授权端点。</p>
+<div class="tw">
+<table>
+<thead><tr><th>方法</th><th>路径</th><th>认证</th><th>说明</th><th>状态码</th></tr></thead>
+<tbody>
+<tr><td><span class="badge get">GET</span></td><td><code>/.well-known/oauth-authorization-server</code></td><td>无</td><td>RFC 8414 授权服务器元数据（端点位置、PKCE 只支持 <code>S256</code>、无 DCR）。<code>Cache-Control: public, max-age=300</code></td><td>200</td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/.well-known/oauth-protected-resource</code>（及 <code>/:path</code> 变体）</td><td>无</td><td>RFC 9728 受保护资源元数据，<code>authorization_servers</code> 指向本站。<code>/api/mcp</code> 的 401 响应会带 <code>WWW-Authenticate: Bearer resource_metadata="…"</code> 引客户端来这里</td><td>200</td></tr>
+<tr><td><span class="badge get">GET</span></td><td><code>/api/oauth/authorize</code></td><td>管理员会话 Cookie</td><td>校验 <code>response_type=code</code>、<code>client_id</code>、回调白名单、PKCE 参数后出同意页。参数非法但回调合法 → 302 带 <code>error</code> 回跳；回调非法 → 400 页面（不重定向，防开放重定向）；未登录 → 一页「先去管理台登录」</td><td>200；302；400；501</td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/oauth/approve</code></td><td>管理员会话 Cookie + Origin 校验</td><td>同意页表单提交。同意 → 建专用 Agent（<code>oauth:&lt;client_id&gt;</code>）+ 落一次性授权码 + 302 带 <code>code</code>（与 <code>state</code>）回跳；拒绝 → 302 带 <code>error=access_denied</code></td><td>302；400；401；403；501</td></tr>
+<tr><td><span class="badge post">POST</span></td><td><code>/api/oauth/token</code></td><td>无（凭 PKCE / refresh）</td><td><code>authorization_code</code> 与 <code>refresh_token</code> 两种 grant。JSON 或 <code>application/x-www-form-urlencoded</code> 皆可。授权码走「DELETE + 返回被删行」原子消费，重放必失败。响应带 <code>Cache-Control: no-store</code></td><td>200；400（<code>invalid_grant</code>）；501</td></tr>
+</tbody>
+</table>
+</div>
+<div class="box info">
+<p class="box-t">拿到 access token 之后</p>
+<p>访问令牌是 <code>moat_</code> 前缀，用法与静态 Key 完全同路：<code>Authorization: Bearer moat_…</code> 打 <code>/api/mcp</code> 或任意 Agent 接口。权限模型没有新增任何东西——它背后就是一个普通 Agent 行，作用域、隔离、审计全部沿用。</p>
+</div>
+
 <h2 id="console-api">控制台接口（/api/console/*）</h2>
 <p>控制台是另一套认证面：Agent 用 API Key，管理员用<b>口令 + 会话 Cookie</b>。所有写操作（POST/PATCH/DELETE）额外要求 <code>X-Moyi-Console: 1</code> 头，缺则回 403。</p>
 
@@ -202,10 +221,10 @@
 
 <h3 id="set-cookie">Set-Cookie 属性</h3>
 <p>登录、安装、改口令成功后，响应带 <code>Set-Cookie</code>。确切属性串（<code>lib/console.js:146-151</code>）：</p>
-<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Lax; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
 <ul>
 <li><code>HttpOnly</code>：JS 读不到，防 XSS 偷 token</li>
-<li><code>SameSite=Strict</code>：跨站请求不带 Cookie，防 CSRF 第一层</li>
+<li><code>SameSite=Lax</code>：跨站 POST/表单不带 Cookie，防 CSRF 第一层；Lax 允许「跨站顶层 GET 导航」带 Cookie，这是 <a href="env.html#oauth">MCP 浏览器授权</a>跳转能识别出已登录管理员的前提</li>
 <li><code>Secure</code>：仅当 <code>X-Forwarded-Proto: https</code> 时追加（<code>lib/console.js:147-148</code>），详见<a href="https.html">HTTPS 与反向代理</a></li>
 <li><code>Max-Age</code>：默认 <code>MOYI_SESSION_DAYS</code>（7 天），上限 30 天（<code>lib/console.js:95-98</code>）</li>
 </ul>

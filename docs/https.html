@@ -68,7 +68,7 @@ return allow.has(origin) ? origin : null;</code></pre>
 <p>默认行为：没有请求带 <code>Origin</code> 头时不返回 CORS 头（<code>return null</code>）。带了的，只有 <code>MOYI_ALLOWED_ORIGINS</code> 白名单里的、以及两个 localhost 地址被放行。其余一律不返回 <code>Access-Control-Allow-Origin</code>，浏览器会拦。</p>
 
 <h3>设成 <code>*</code> 的 CSRF 后果</h3>
-<p>如果 <code>MOYI_ALLOWED_ORIGINS=*</code>，任何网页都能以当前浏览器的身份调墨忆 API。墨忆有两道 CSRF 防护：Cookie <code>SameSite=Strict</code> 和写操作另需 <code>X-Moyi-Console: 1</code> 头。前者在同站跳转时仍然会带 Cookie（<code>Strict</code> 不防同源攻击），后者跨站 fetch 发不出自定义头——但 <code>SameSite=Strict</code> 在用户从<b>同站</b>的恶意页面点链接时不起作用。CORS <code>*</code> 把最后一道门拆了。</p>
+<p>如果 <code>MOYI_ALLOWED_ORIGINS=*</code>，任何网页都能以当前浏览器的身份调墨忆 API。墨忆有两道 CSRF 防护：Cookie <code>SameSite=Lax</code> 和写操作另需 <code>X-Moyi-Console: 1</code> 头。前者在同站跳转时仍然会带 Cookie（<code>Lax</code> 不防同源攻击，且它允许跨站顶层 GET 导航带 Cookie——这是 <a href="env.html#oauth">MCP 浏览器授权</a>的要求），后者跨站 fetch 发不出自定义头——但用户在<b>同站</b>的恶意页面里时它就不起作用了。CORS <code>*</code> 把最后一道门拆了。</p>
 <p>生产环境应该显式列出前端域名，比如 <code>MOYI_ALLOWED_ORIGINS=https://moyi.example.com</code>。</p>
 
 <h2 id="nginx">Nginx 配置</h2>

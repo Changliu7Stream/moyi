@@ -30,6 +30,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.memories TO web_anon, authenticat
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.settings TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admins TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_sessions TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_tokens TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_codes TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.match_memories(vector(384), uuid, int, float) TO web_anon, authenticated;
 

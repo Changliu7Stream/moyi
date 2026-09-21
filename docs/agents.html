@@ -81,6 +81,34 @@
 </div>
 <p>Key 泄露或想断开某个 Agent：管理台点「重置 Key」，旧 Key 立即失效；「删除」则连 Agent 记录和它的全部记忆一起级联删除（<code>ON DELETE CASCADE</code>），<b>不可逆</b>。</p>
 
+<h2 id="oauth">浏览器授权（OAuth 2.1，可选）</h2>
+<p>上面两种形态共用同一把 <code>moyi_…</code> Key，都要先手工复制粘贴。如果你的 MCP 客户端支持<b>远程 HTTP + OAuth</b>（按 MCP 规范走发现文档），可以省掉这一步：客户端自己拉起浏览器，你在<b>已登录的管理台</b>里点一下「同意」，它就拿走一把专属 token。这条路径要服务端先开启：<code>MOYI_OAUTH_CLIENT_ID</code> 设一个约定的 client_id（详见<a href="env.html#oauth">环境变量页</a>），未设则整块功能关闭。</p>
+<div class="box info">
+<p class="box-t">它解决的是「发钥匙」这一步，不是换一套权限模型</p>
+<p>授权通过后，服务端为该客户端<b>新建一个专属 Agent</b>（名字形如 <code>oauth:&lt;client_id&gt;</code>），签发的 access token 通过 <code>oauth_tokens</code> 表映射到这个 Agent。之后它读写记忆的作用域、隔离规则，和你在管理台手动建一个 Agent 一模一样——<b>没有多给任何权限</b>。撤销也走同一条路：管理台删掉这个 Agent，它的 token 随之级联失效（鉴权结果有 5 秒进程内缓存，所以「失效」在全实例上的最大延迟是 5 秒，与实例设置缓存同一量级）。</p>
+</div>
+<p>三个协议端点，全部挂在 Agent 面的 <code>/api/oauth/*</code> 下、在普通 Key 闸门之前处理：</p>
+<div class="tw">
+<table>
+<thead><tr><th>端点</th><th>方法</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td><code>/api/oauth/authorize</code></td><td>GET</td><td>校验参数后返回同意页（未登录则给「先去管理台登录」页）</td></tr>
+<tr><td><code>/api/oauth/approve</code></td><td>POST</td><td>同意页表单提交：同意→建 Agent + 302 回跳带 <code>code</code>；拒绝→302 带 <code>error=access_denied</code></td></tr>
+<tr><td><code>/api/oauth/token</code></td><td>POST</td><td>授权码 + PKCE <code>verifier</code> 换 <code>access_token</code>/<code>refresh_token</code>，或用 refresh 续期</td></tr>
+</tbody>
+</table>
+</div>
+<p>另有两个 RFC 发现文档，供客户端自动找到上面的端点：</p>
+<ul>
+<li><code>/.well-known/oauth-authorization-server</code> —— 授权服务器元数据（各端点地址、只支持 <code>code</code> 流程与 <code>S256</code>）。</li>
+<li><code>/.well-known/oauth-protected-resource</code> —— 受保护资源元数据（指向 <code>/api/mcp</code>）。开了 OAuth 后，<code>/api/mcp</code> 的 401 响应会带 <code>WWW-Authenticate: Bearer resource_metadata="…"</code> 头，客户端据此发起授权。</li>
+</ul>
+<div class="box warn">
+<p class="box-t">这一版刻意没做的：动态注册与细粒度 scope</p>
+<p>client_id 与 redirect_uri 白名单<b>由服务端环境变量写死</b>，不支持 RFC 7591 动态注册；token 是整实例一个 <code>mcp</code> scope，不分读写。授权同意人固定是「已登录的管理员」，因为墨忆没有 Agent 侧的浏览器登录。这几项都留给后续里程碑。</p>
+</div>
+<p>安全边界：PKCE 强制 <code>S256</code>，授权码一次性、60 秒过期；redirect_uri 必须精确命中白名单，拒绝带 <code>#fragment</code> 或 <code>user@</code> 的地址（防开放重定向）；同意表单额外校验 <code>Origin</code> 等于本站。token 只存 sha256 哈希，明文只在签发瞬间出现一次。端点逐条清单见 <a href="api.html#oauth">接口清单页的浏览器授权一节</a>。</p>
+
 <h2 id="global">全局记忆：只放宽「能读到谁」</h2>
 <p>管理台 → 设置 → 打开「全局记忆」。生效范围用一句话概括：</p>
 <div class="box info">

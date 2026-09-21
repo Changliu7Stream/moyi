@@ -103,6 +103,35 @@ CREATE INDEX IF NOT EXISTS admin_sessions_token_idx
 CREATE INDEX IF NOT EXISTS admin_sessions_admin_idx
   ON public.admin_sessions (admin_id);
 
+-- ═══════════════════════════════════════════════════
+-- oauth_tokens 表（MCP 浏览器授权：access / refresh token）
+-- 仅在使用 OAuth（配了 MOYI_OAUTH_CLIENT_ID）时才需要这张表。
+-- 同样只存 sha256，不存原文；删掉对应 Agent 会级联清掉它的 token。
+-- ═══════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS public.oauth_tokens (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash  text        NOT NULL UNIQUE,
+  kind        text        NOT NULL,                 -- 'access' | 'refresh'
+  agent_id    uuid        NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
+  client_id   text        NOT NULL,
+  revoked     boolean     NOT NULL DEFAULT false,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_hash_idx  ON public.oauth_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS oauth_tokens_agent_idx ON public.oauth_tokens (agent_id);
+
+-- 授权码：只活 60 秒、兑换即删（DELETE+RETURN 原子消费）。删 Agent 级联清。
+CREATE TABLE IF NOT EXISTS public.oauth_codes (
+  code_hash      text        PRIMARY KEY,
+  agent_id       uuid        NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
+  client_id      text        NOT NULL,
+  redirect_uri   text        NOT NULL,
+  code_challenge text        NOT NULL,
+  expires_at     timestamptz NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
 -- 一行一个键。setup_locked 这一行同时充当「已安装」的 CAS 锁。
 CREATE TABLE IF NOT EXISTS public.settings (
   key         text        PRIMARY KEY,

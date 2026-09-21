@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>数据库结构 · 墨忆文档</title>
-<meta name="description" content="墨忆的五张表、索引、函数，以及自托管与 Supabase 两套栈在权限模型上的差异。以 sql/00-schema.sql 与 docker/init/10-roles.sql 为权威。">
+<meta name="description" content="墨忆的七张表、索引、函数，以及自托管与 Supabase 两套栈在权限模型上的差异。以 sql/00-schema.sql 与 docker/init/10-roles.sql 为权威。">
 <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
 <div class="d-wrap"><main>
 <p class="crumb">参考 / Schema</p>
 <h1>数据库结构</h1>
-<p class="lede">墨忆一共五张表：agents、memories、admins、admin_sessions、settings，外加两个 SQL 函数。本页以 <code>sql/00-schema.sql</code> 与 <code>docker/init/10-roles.sql</code> 为权威，逐列、逐索引讲清「为什么长这样」。</p>
+<p class="lede">墨忆一共七张表：agents、memories、admins、admin_sessions、oauth_tokens、oauth_codes、settings，外加两个 SQL 函数。其中 oauth_* 两张只在开启 <a href="env.html#oauth">MCP 浏览器授权</a> 时才会被读写。本页以 <code>sql/00-schema.sql</code> 与 <code>docker/init/10-roles.sql</code> 为权威，逐列、逐索引讲清「为什么长这样」。</p>
 
-<h2>五张表</h2>
+<h2>七张表</h2>
 
 <h3>agents — 持有 API Key 的工具身份</h3>
 <div class="tw">
@@ -82,6 +82,39 @@
 </table>
 </div>
 
+<h3>oauth_tokens — MCP 浏览器授权签发的令牌</h3>
+<p>仅当配置了 <code>MOYI_OAUTH_CLIENT_ID</code>（<a href="env.html#oauth">第 12 组</a>）才会写入。结构与 admin_sessions 同思路：哈希落库、级联清理。</p>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>uuid</td><td>PK, <code>gen_random_uuid()</code></td><td>与 admins/agents 一致的主键空间</td></tr>
+<tr><td><code>token_hash</code></td><td>text</td><td>NOT NULL UNIQUE</td><td>存 access/refresh token 的 sha256，不存原文；UNIQUE 同时充当查找索引</td></tr>
+<tr><td><code>kind</code></td><td>text</td><td>NOT NULL</td><td><code>'access'</code> / <code>'refresh'</code>。服务层校验前缀 <code>moat_</code>/<code>morf_</code> 与此列一致，防止两类令牌互相冒用</td></tr>
+<tr><td><code>agent_id</code></td><td>uuid</td><td>NOT NULL, FK → agents ON DELETE CASCADE</td><td>令牌归属。授权同意时新建一个专用 Agent 行（name 为 <code>oauth:&lt;client_id&gt;</code>、role=agent），删掉它即吊销该客户端的全部令牌</td></tr>
+<tr><td><code>client_id</code></td><td>text</td><td>NOT NULL</td><td>签发时绑定的 OAuth 客户端；换令牌/刷新时校验一致，防止跨客户端消费</td></tr>
+<tr><td><code>revoked</code></td><td>boolean</td><td>NOT NULL, 默认 false</td><td>软吊销位（当前主要靠删 Agent 级联硬删，此列为后续细粒度吊销预留）</td></tr>
+<tr><td><code>expires_at</code></td><td>timestamptz</td><td>NOT NULL</td><td>access 1 小时、refresh 30 天</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>审计用</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>oauth_codes — 一次性授权码</h3>
+<p>授权码<b>不能放进程内存</b>——Vercel/Workers 这类无服务器平台上，authorize、approve、token 三个请求可能落在不同实例上。所以落库，并且用「DELETE + 返回被删行」做原子的一次性消费：并发重放只有一个能拿到行。寿命只有 60 秒。</p>
+<div class="tw">
+<table>
+<thead><tr><th>列</th><th>类型</th><th>约束 / 默认</th><th>为什么</th></tr></thead>
+<tbody>
+<tr><td><code>code_hash</code></td><td>text</td><td>PK</td><td>授权码的 sha256 直接做主键——消费就是按主键删，不需要二级索引</td></tr>
+<tr><td><code>agent_id</code></td><td>uuid</td><td>NOT NULL, FK → agents ON DELETE CASCADE</td><td>同意时新建的专用 Agent；级联清理</td></tr>
+<tr><td><code>client_id</code> / <code>redirect_uri</code> / <code>code_challenge</code></td><td>text</td><td>NOT NULL</td><td>兑换时逐项核对：客户端一致、回调一致、PKCE verifier 的 S256 与 challenge 匹配。三项全中才发令牌</td></tr>
+<tr><td><code>expires_at</code></td><td>timestamptz</td><td>NOT NULL</td><td>创建后 60 秒；过期行由下次消费时顺手拒绝，无后台清理任务（残留行无密钥价值，随 Agent 删除级联消失）</td></tr>
+<tr><td><code>created_at</code></td><td>timestamptz</td><td>NOT NULL, <code>now()</code></td><td>审计用</td></tr>
+</tbody>
+</table>
+</div>
+
 <h3>settings — 实例级配置</h3>
 <div class="tw">
 <table>
@@ -113,6 +146,10 @@
 <tr><td><code>admin_sessions_token_hash_key</code></td><td>admin_sessions</td><td>UNIQUE btree</td><td>token_hash 唯一约束的隐式索引，已能支撑等值查询</td></tr>
 <tr><td><code>admin_sessions_token_idx</code></td><td>admin_sessions</td><td>btree (token_hash)</td><td><b>冗余</b>：与上面的 UNIQUE 约束索引功能完全重叠。不影响正确性，只是可清理——历史遗留，早期版本先建表后加 UNIQUE，后来补了 UNIQUE 但没删旧索引</td></tr>
 <tr><td><code>admin_sessions_admin_idx</code></td><td>admin_sessions</td><td>btree (admin_id)</td><td>按管理员列出会话、按管理员级联清理</td></tr>
+<tr><td><code>oauth_tokens_pkey</code> / <code>oauth_tokens_token_hash_key</code></td><td>oauth_tokens</td><td>btree PK / UNIQUE btree</td><td>主键；token_hash 唯一约束的隐式索引，兼作等值查找</td></tr>
+<tr><td><code>oauth_tokens_hash_idx</code></td><td>oauth_tokens</td><td>btree (token_hash)</td><td><b>冗余</b>：与 UNIQUE 约束索引功能重叠，同 admin_sessions 的历史遗留，不影响正确性</td></tr>
+<tr><td><code>oauth_tokens_agent_idx</code></td><td>oauth_tokens</td><td>btree (agent_id)</td><td>按 Agent 列出/级联清理令牌</td></tr>
+<tr><td><code>oauth_codes_pkey</code></td><td>oauth_codes</td><td>btree PK (code_hash)</td><td>主键即消费路径，无需额外索引</td></tr>
 <tr><td><code>settings_pkey</code></td><td>settings</td><td>btree PK</td><td>主键</td></tr>
 </tbody>
 </table>
@@ -147,15 +184,15 @@
 
 <div class="box stop">
 <p class="box-t">自托管栈下 PostgREST 绝不能暴露公网</p>
-<p><code>docker/init/10-roles.sql</code> 给 <code>web_anon</code> 授了<b>全部五张表</b>的 SELECT/INSERT/UPDATE/DELETE。不开 RLS 意味着：拿到 anon token 就能直接读 <code>admins.password_hash</code>——那是人挑的口令的 scrypt 哈希，可离线爆破。这不是理论风险，是架构决定的。</p>
+<p><code>docker/init/10-roles.sql</code> 给 <code>web_anon</code> 授了<b>全部七张表</b>的 SELECT/INSERT/UPDATE/DELETE。不开 RLS 意味着：拿到 anon token 就能直接读 <code>admins.password_hash</code>——那是人挑的口令的 scrypt 哈希，可离线爆破。这不是理论风险，是架构决定的。</p>
 </div>
 
 <div class="tw">
 <table>
 <thead><tr><th>维度</th><th>自托管（00-schema + 10-roles）</th><th>Supabase（vector-search）</th></tr></thead>
 <tbody>
-<tr><td>RLS</td><td><b>关</b>。信任边界在墨忆服务层</td><td><b>开</b>。五张表全部 ENABLE</td></tr>
-<tr><td>web_anon 权限</td><td>五张表全量 CRUD + 两个函数 EXECUTE</td><td><b>无任何权限</b>（无 policy = 默认拒绝）</td></tr>
+<tr><td>RLS</td><td><b>关</b>。信任边界在墨忆服务层</td><td><b>开</b>。七张表全部 ENABLE</td></tr>
+<tr><td>web_anon 权限</td><td>七张表全量 CRUD + 两个函数 EXECUTE</td><td><b>无任何权限</b>（无 policy = 默认拒绝）</td></tr>
 <tr><td>service_role</td><td>不存在这个角色</td><td>显式 policy 全量放行</td></tr>
 <tr><td>admins 暴露风险</td><td>PostgREST 暴露 = 口令哈希库公开</td><td>RLS 默认拒绝，anon 读不到</td></tr>
 <tr><td>admin_sessions_token_idx</td><td>有（冗余，见上）</td><td>无</td></tr>
@@ -171,10 +208,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.memories TO web_anon, authenticat
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.settings TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admins TO web_anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_sessions TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_tokens TO web_anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_codes TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_access(text) TO web_anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.match_memories(vector, uuid, int, float) TO web_anon, authenticated;</code></pre>
 
-<p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：五张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
+<p>Supabase 路线的对应策略（<code>sql/vector-search.sql</code>，须先跑过 <code>sql/00-schema.sql</code> 建表）：七张表全部 <code>ENABLE ROW LEVEL SECURITY</code>，每张表只建一条 <code>FOR ALL TO service_role USING (true)</code> 的策略，<b>不建任何面向 anon / authenticated 的 policy</b>——默认拒绝。</p>
 
 <h2>为什么墨忆只依赖 PostgREST 协议</h2>
 <p>墨忆不认识「数据库」，只认识「PostgREST 协议的 HTTP 接口」。所有存储操作都是 <code>fetch(REST + path, opts)</code>——自托管的 PostgREST 和 Supabase 托管的 PostgREST 可以互换，代码一行不改。差异只在 URL 形态和路径前缀（Supabase 挂 <code>/rest/v1</code>，原生 PostgREST 挂根路径）。</p>

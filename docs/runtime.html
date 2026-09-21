@@ -135,7 +135,7 @@
 <h3>X-Forwarded-Proto → 会话 Cookie 的 Secure</h3>
 <pre><code>const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
 const secure = proto === 'https' ? '; Secure' : '';
-// moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=…[; Secure]</code></pre>
+// moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Lax; Max-Age=…[; Secure]</code></pre>
 <p>代理链可能把多级 hop 拼成 <code>x-forwarded-proto: https, http</code>，所以取<b>第一段</b>（最外层、用户实际看到的协议）。</p>
 <div class="box warn">
 <p class="box-t">代理不传这个头 → Cookie 永远不带 Secure</p>

@@ -62,18 +62,18 @@ return crypto.timingSafeEqual(got, want);</code></pre>
 <h2 id="csrf">CSRF 双层防护</h2>
 <p>控制台写操作（POST/PATCH/DELETE）要求两样东西同时满足：</p>
 <ol>
-<li><b>Cookie <code>SameSite=Strict</code></b>（<code>lib/console.js:150</code>）：跨站请求不带 Cookie，挡住最常见的 CSRF 形态（跨站表单提交）</li>
+<li><b>Cookie <code>SameSite=Lax</code></b>（<code>lib/console.js:155</code>）：跨站 POST/表单不带 Cookie，挡住最常见的 CSRF 形态（跨站表单提交）。之所以不是 <code>Strict</code>：<a href="env.html#oauth">MCP 浏览器授权</a>要求客户端拉起系统浏览器顶层导航到 <code>/api/oauth/authorize</code>，Strict 会在这一跳把会话 Cookie 拦掉，管理员就成了未登录。Lax 只放行「跨站顶层 GET」，而墨忆的 GET 全部只读</li>
 <li><b><code>X-Moyi-Console: 1</code> 头</b>（<code>lib/moyi.js:633-638</code>）：跨站 <code>fetch</code> 发不出自定义头（会被 CORS 预检拦住），跨站 <code>&lt;form&gt;</code> 也发不出自定义头</li>
 </ol>
-<p>两道独立的门，不依赖任何一条假设。即使 <code>SameSite=Strict</code> 在某些浏览器版本有兼容问题，第二层头检查仍然挡得住。</p>
+<p>两道独立的门，不依赖任何一条假设。即使 <code>SameSite=Lax</code> 在某些浏览器版本有兼容问题，第二层头检查仍然挡得住。</p>
 <div class="box info">
 <p class="box-t">为什么自定义头能防 CSRF</p>
 <p>浏览器的同源策略 + CORS 预检机制规定：跨站 <code>fetch</code> 若要带自定义头，必须先发 <code>OPTIONS</code> 预检请求，服务端显式放行才能继续。墨忆的 CORS 白名单（<code>lib/moyi.js:575-585</code>）默认只放行 <code>localhost:3906</code> 与 <code>MOYI_ALLOWED_ORIGINS</code> 里显式列出的源，攻击者的 <code>evil.com</code> 不在白名单里，预检直接被拒，自定义头发不过去。</p>
 </div>
 
 <h2 id="cookie">Cookie 属性与 X-Forwarded-Proto</h2>
-<p>Set-Cookie 的确切属性串（<code>lib/console.js:146-151</code>）：</p>
-<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
+<p>Set-Cookie 的确切属性串（<code>lib/console.js:146-155</code>）：</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Lax; Max-Age=&lt;seconds&gt;[; Secure]</code></pre>
 <p><code>Secure</code> 标志由 <code>X-Forwarded-Proto: https</code> 决定（<code>lib/console.js:147-148</code>）。墨忆自己不听 443，HTTPS 总是由反向代理终结，所以只能从代理传进来的头里判断。代理链可能拼成 <code>x-forwarded-proto: https, http</code>，取<b>第一段</b>（最外层、用户实际看到的协议）。</p>
 <div class="box warn">
 <p class="box-t">代理不传这个头 → Cookie 永远不带 Secure</p>

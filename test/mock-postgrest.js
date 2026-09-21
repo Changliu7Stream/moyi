@@ -9,17 +9,19 @@ const crypto = require('crypto');
 let _seq = 0;
 const nextTs = () => new Date(Date.now() - (1000 - (_seq++))).toISOString();
 
-const db = { agents: [], memories: [], admins: [], admin_sessions: [], settings: [] };
+const db = { agents: [], memories: [], admins: [], admin_sessions: [], settings: [], oauth_tokens: [], oauth_codes: [] };
 // 引导安装那一段测试需要一个「干净的空实例」，而它跑在最后，
 // 此时主 mock 里已经有几十个 agent 和上百条记忆了。
 // 只在这几个表上支持 ?__clear=1（记忆与 agent 清不得，D2 的除名用例还指着它们）。
-const CLEARABLE = ['admins', 'admin_sessions', 'settings'];
+const CLEARABLE = ['admins', 'admin_sessions', 'settings', 'oauth_tokens', 'oauth_codes'];
 // 被临时「删掉」的表（模拟迁移 SQL 未执行）
 const NOTABLE = new Set();
 // 模拟真实库上的唯一约束：撞了要回 409（引导安装拿它当 CAS 用）
 const UNIQUE = {
   admins: [['username', r => r.username]],
   settings: [['key', r => r.key]],
+  oauth_tokens: [['token_hash', r => r.token_hash]],
+  oauth_codes: [['code_hash', r => r.code_hash]],
 };
 let FAIL_MODE = false;
 function send401(res) {
@@ -208,34 +210,36 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'POST') {
     let b = ''; req.on('data', c => b += c); req.on('end', () => {
-      const body = JSON.parse(b || '{}');
-      // 模拟 Postgres gen_random_uuid()，保证与真实 Supabase 的 id 形态一致
-      if (!body.id && ['agents', 'admins', 'admin_sessions'].includes(t)) body.id = crypto.randomUUID();
-      // 模拟列默认值：真实 schema 里 disabled 是 NOT NULL DEFAULT false，
-      // 缺了它 `disabled=eq.false` 这个过滤会把所有行都筛掉（最后超管的护栏因此误判）
-      if (t === 'admins' && body.disabled === undefined) body.disabled = false;
-      if (t === 'admins' && body.session_version === undefined) body.session_version = 0;
-      const dup = (UNIQUE[t] || []).find(([col, get]) =>
-        db[t].some(r => String(get(r)) === String(get(body))));
-      if (dup) {
-        // PostgREST 的 upsert：撞唯一约束时改成更新既有行，而不是报错
-        if (prefer.includes('resolution=merge-duplicates')) {
-          const hit = db[t].find(r => String(dup[1](r)) === String(dup[1](body)));
-          Object.assign(hit, body, { id: hit.id });
-          return send(204, '');
+      const body0 = JSON.parse(b || '{}');
+      // PostgREST 支持数组批量插入（一次签 access+refresh 就用到），逐条走同一段逻辑
+      const rows = Array.isArray(body0) ? body0 : [body0];
+      const inserted = [];
+      for (const body of rows) {
+        if (!body.id && ['agents', 'admins', 'admin_sessions', 'oauth_tokens'].includes(t)) body.id = crypto.randomUUID();
+        if (t === 'admins' && body.disabled === undefined) body.disabled = false;
+        if (t === 'admins' && body.session_version === undefined) body.session_version = 0;
+        if (t === 'oauth_tokens' && body.revoked === undefined) body.revoked = false;
+        const dup = (UNIQUE[t] || []).find(([col, get]) =>
+          db[t].some(r => String(get(r)) === String(get(body))));
+        if (dup) {
+          if (prefer.includes('resolution=merge-duplicates')) {
+            const hit = db[t].find(r => String(dup[1](r)) === String(dup[1](body)));
+            Object.assign(hit, body, { id: hit.id });
+            continue;
+          }
+          return send(409, { code: '23505', message: 'duplicate key value violates unique constraint ' + dup[0] });
         }
-        return send(409, { code: '23505', message: 'duplicate key value violates unique constraint ' + dup[0] });
-      }
-      if (!body.created_at) body.created_at = nextTs();
-      if (t === 'memories') {
-        // 外键：agent_id 必须存在
-        if (!db.agents.find(a => a.id === body.agent_id)) {
-          return send(400, { code: '23503', message: 'foreign key violation' });
+        if (!body.created_at) body.created_at = nextTs();
+        if (t === 'memories') {
+          if (!db.agents.find(a => a.id === body.agent_id)) {
+            return send(400, { code: '23503', message: 'foreign key violation' });
+          }
         }
+        db[t].push(body);
+        inserted.push(body);
       }
-      db[t].push(body);
-      if (prefer.includes('return=representation')) return send(201, [body]);
-      send(201, body);
+      if (prefer.includes('return=representation')) return send(201, inserted);
+      send(201, Array.isArray(body0) ? inserted : inserted[0]);
     });
     return;
   }

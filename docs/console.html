@@ -15,7 +15,7 @@
 <p class="lede">管理台是给<b>部署者</b>用的，不是给 Agent 用的。它管三件事：发钥匙（Agent）、管人（管理员）、开关（实例设置）。它<b>看不见任何一条记忆的正文</b>——这是刻意的。</p>
 
 <div class="flow">
-<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 agents / memories / admins / admin_sessions / settings 五张表</span></div>
+<div class="flow-step"><span class="no">1</span><b>跑迁移 SQL</b><span>建出 agents / memories / admins / admin_sessions / oauth_tokens / oauth_codes / settings 七张表</span></div>
 <div class="flow-arrow">→</div>
 <div class="flow-step"><span class="no">2</span><b>配环境变量</b><span>存储 URL + token（这步不能省，也不能在网页里填）</span></div>
 <div class="flow-arrow">→</div>
@@ -52,9 +52,9 @@
 <tr><td>口令强度</td><td>≥10 字符、≤512、拒绝单字符重复、拒绝 6 个极常见口令</td><td>只做下限拦截，不搞复杂度恐吓</td></tr>
 <tr><td>用户名</td><td>2–32 字符，字母数字 <code>_</code> <code>-</code> 或中文，自动 trim</td><td>允许中文管理员名</td></tr>
 <tr><td>会话 token</td><td>32 字节随机 → <code>base64url</code>；<b>库里只存它的 sha256</b></td><td>拖库拿不到可用的会话凭据</td></tr>
-<tr><td>Cookie</td><td><code>HttpOnly; SameSite=Strict; Path=/; Max-Age=…</code>，且仅当 <code>X-Forwarded-Proto: https</code> 时追加 <code>Secure</code></td><td>见<a href="https.html#proto">反向代理页</a></td></tr>
+<tr><td>Cookie</td><td><code>HttpOnly; SameSite=Lax; Path=/; Max-Age=…</code>，且仅当 <code>X-Forwarded-Proto: https</code> 时追加 <code>Secure</code></td><td>见<a href="https.html#proto">反向代理页</a>；用 Lax 而非 Strict 是为了让<a href="env.html#oauth">MCP 浏览器授权</a>的顶层跳转带上会话</td></tr>
 <tr><td>整账号踢下线</td><td><code>admins.session_version</code> 计数；改口令 / 被停用 / 改角色都会 +1</td><td>不需要维护「撤销列表」，一次更新作废全部旧会话</td></tr>
-<tr><td>CSRF</td><td>双层：<code>SameSite=Strict</code> + 所有非 GET 的控制台写请求必须带 <code>X-Moyi-Console: 1</code></td><td>跨站表单无法设置自定义头，缺头即 403——即使你已登录</td></tr>
+<tr><td>CSRF</td><td>双层：<code>SameSite=Lax</code>（跨站 POST/表单不带 Cookie）+ 所有非 GET 的控制台写请求必须带 <code>X-Moyi-Console: 1</code></td><td>跨站表单既发不出 Cookie 也设置不了自定义头，缺头即 403——即使你已登录</td></tr>
 <tr><td>口令暴破</td><td>每来源 15 分钟 <b>10</b> 次失败（<code>MOYI_ADMIN_FAIL_PER_15MIN</code>），与 Agent Key 的计数器<b>完全分开</b></td><td>某台机器在试 Agent Key，不该顺手把你锁在管理台外面</td></tr>
 </tbody>
 </table>

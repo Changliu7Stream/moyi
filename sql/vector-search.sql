@@ -68,6 +68,39 @@ CREATE TABLE IF NOT EXISTS public.admin_sessions (
 CREATE INDEX IF NOT EXISTS admin_sessions_admin_idx
   ON public.admin_sessions (admin_id);
 
+-- MCP 浏览器授权签发的 access / refresh token（详见 lib/oauth.js）。
+-- 同样只存 sha256，不存原文；删掉对应 Agent 会级联清掉它的 token。
+CREATE TABLE IF NOT EXISTS public.oauth_tokens (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash  text        NOT NULL UNIQUE,
+  kind        text        NOT NULL,                 -- 'access' | 'refresh'
+  agent_id    uuid        NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
+  client_id   text        NOT NULL,
+  revoked     boolean     NOT NULL DEFAULT false,
+  expires_at  timestamptz NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_agent_idx ON public.oauth_tokens (agent_id);
+ALTER TABLE public.oauth_tokens ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "service_role full access" ON public.oauth_tokens;
+CREATE POLICY "service_role full access" ON public.oauth_tokens
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+-- 授权码：只活 60 秒、兑换即删（DELETE+RETURN 原子消费）。删 Agent 级联清。
+CREATE TABLE IF NOT EXISTS public.oauth_codes (
+  code_hash      text        PRIMARY KEY,
+  agent_id       uuid        NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
+  client_id      text        NOT NULL,
+  redirect_uri   text        NOT NULL,
+  code_challenge text        NOT NULL,
+  expires_at     timestamptz NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.oauth_codes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "service_role full access" ON public.oauth_codes;
+CREATE POLICY "service_role full access" ON public.oauth_codes
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+
 -- 一行一个键。setup_locked 这一行同时充当「已安装」的 CAS 锁。
 CREATE TABLE IF NOT EXISTS public.settings (
   key         text        PRIMARY KEY,

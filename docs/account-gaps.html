@@ -135,8 +135,8 @@
 <div class="flow-arrow">→</div>
 <div class="flow-step"><span class="no">4</span><b>过期即删</b><span>用到已过期的行顺手 DELETE，不需要定时任务</span></div>
 </div>
-<p>Cookie 属性（<code>lib/console.js:146-151</code>）：</p>
-<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
+<p>Cookie 属性（<code>lib/console.js:146-155</code>）：</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Lax; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
 <p>清单要的 <b>HttpOnly ✓、Secure 有条件 ✓</b>。<code>Secure</code> 只在 <code>X-Forwarded-Proto</code> 第一段是 <code>https</code> 时才加——墨忆不听 TLS，只能信反代传进来的头，配错的后果和自查方法在 <a href="https.html#proto">HTTPS 与反向代理</a>。</p>
 <p>有效期是<b>固定窗口，不滑动续期</b>：<code>sessionExpiresAt = now + SESSION_TTL_MS</code>（<code>lib/console.js:95-98</code> 钳制、<code>:106</code> 计算到期），默认 7 天，钳制在 1 分钟 ~ 30 天。会话表 <code>admin_sessions</code> 只存<b>当前有效</b>的会话（<code>token_hash UNIQUE</code> + <code>expires_at</code>），用到已过期的行顺手删掉，所以它不需要定时清理任务，也<b>不是</b>登录历史表。</p>
 
@@ -161,14 +161,14 @@
 <tbody>
 <tr><td>SQL 注入</td><td><span class="badge post">已有</span></td><td>没有一处拼 SQL——查询是拼 PostgREST 的 URL 串。风险因此变成「查询串注入」，挡法是入参白名单：<code>safeUuid</code> / <code>safeId</code> / <code>IMPORTANCE</code> 集合（<code>lib/moyi.js:270-279</code>），格式不过就 400，用户名为 <code>encodeURIComponent</code></td></tr>
 <tr><td>XSS</td><td><span class="badge post">已有</span></td><td>库里存的一直是原文，输出时转义——从不做「入库前过滤标签」那种两头不靠的做法。管理台 <code>esc()</code> 覆盖 <code>&amp; &lt; &gt; " '</code>（<code>public/console.js:19</code>），另有 7 处直接赋 <code>textContent</code>（天然免转义，Key 与 MCP 配置片段这类要整段复制的字段走这条）。这套机制的脆弱点在第五节写明了</td></tr>
-<tr><td>CSRF</td><td><span class="badge post">已有</span></td><td>两层独立：<code>SameSite=Strict</code> + 写操作必须带 <code>X-Moyi-Console: 1</code>（<code>lib/moyi.js:633-638</code>）。跨站 <code>&lt;form&gt;</code> 发不出自定义头，跨站 <code>fetch</code> 想发就先过 CORS 预检</td></tr>
+<tr><td>CSRF</td><td><span class="badge post">已有</span></td><td>两层独立：<code>SameSite=Lax</code> + 写操作必须带 <code>X-Moyi-Console: 1</code>（<code>lib/moyi.js:633-638</code>）。跨站 <code>&lt;form&gt;</code> 发不出自定义头，跨站 <code>fetch</code> 想发就先过 CORS 预检</td></tr>
 <tr><td>越权访问</td><td><span class="badge post">已有</span></td><td>管理员改口令只能改自己（要验当前口令）；改别人、删别人、撤销别人会话一律要超管；不能停用或降级自己；不能删掉最后一个超管</td></tr>
 </tbody>
 </table>
 </div>
 <div class="box warn">
 <p class="box-t">两项清单会要求、墨忆确实没有的响应头</p>
-<p><code>Content-Security-Policy</code> 与 <code>X-Frame-Options</code>：<b>没有设置</b>（全仓库无一处下发），HSTS 也没有。当前靠 <code>SameSite=Strict</code> + 无第三方脚本 + <code>HttpOnly</code> 兜住点击劫持与内联注入的主要路径，但这是「够用」而不是「合规」。要么在反代统一加头，要么在 <code>server.js</code> 的响应封装里补——加之前先确认管理台没有内联脚本会被 CSP 打死。</p>
+<p><code>Content-Security-Policy</code> 与 <code>X-Frame-Options</code>：<b>没有设置</b>（全仓库无一处下发），HSTS 也没有。当前靠 <code>SameSite=Lax</code> + 无第三方脚本 + <code>HttpOnly</code> 兜住点击劫持与内联注入的主要路径，但这是「够用」而不是「合规」。要么在反代统一加头，要么在 <code>server.js</code> 的响应封装里补——加之前先确认管理台没有内联脚本会被 CSP 打死。</p>
 </div>
 
 <h3>HTTPS 与 CORS</h3>
@@ -191,8 +191,8 @@
 </table>
 </div>
 <div class="box info">
-<p class="box-t">Cookie 属性（<code>lib/console.js:146-151</code>）</p>
-<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Strict; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
+<p class="box-t">Cookie 属性（<code>lib/console.js:146-155</code>）</p>
+<pre><code>moyi_session=&lt;token&gt;; Path=/; HttpOnly; SameSite=Lax; Max-Age=&lt;秒&gt;[; Secure]</code></pre>
 <p>清单要的 <b>HttpOnly ✓、Secure 有条件 ✓</b>。<code>Secure</code> 只在 <code>X-Forwarded-Proto</code> 第一段是 <code>https</code> 时才加——墨忆不听 TLS，只能信反代传进来的头。配错的后果和自查方法见 <a href="https.html#proto">HTTPS 与反向代理</a>。</p>
 </div>
 

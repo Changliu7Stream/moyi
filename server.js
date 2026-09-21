@@ -57,7 +57,10 @@ function staticFile(req, res) {
 
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
-  if (u.pathname === '/api' || u.pathname.startsWith('/api/')) {
+  // /.well-known/* 为 OAuth 元数据发现端点，必须与 /api/* 一样直接进 route，
+  // 不能被 staticFile 吞掉（public/ 下并无对应文件）。
+  if (u.pathname === '/api' || u.pathname.startsWith('/api/')
+      || u.pathname.startsWith('/.well-known/')) {
     try { return await route(req, res, null, u); }
     catch (e) {
       // 不把内部异常细节回给客户端

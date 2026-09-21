@@ -11,6 +11,7 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 
 const MOCK_PORT = 3999;
@@ -331,6 +332,10 @@ async function main() {
   // 无凭据应 401（认证在上游完成）
   h = await api('/api/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
   ok('HTTP-MCP 无凭据回 401', h.status === 401, h.status);
+  // 未配置 OAuth 的主实例：/api/oauth/* 整块关闭（501），401 也不带发现头
+  h = await api('/api/oauth/token', 'POST', { grant_type: 'authorization_code' });
+  ok('未开 OAuth 时 /api/oauth/token → 501', h.status === 501, h.status);
+  ok('未开 OAuth 时 401 不带 WWW-Authenticate', !/WWW-Authenticate/i.test(String(h.headers.get('www-authenticate'))), h.headers.get('www-authenticate'));
 
   section('F 存储层故障必须显式报错，不能伪装成「记忆消失」');
   // 这是迁移中最可能踩到的坑：anon key 在开 RLS 后被拒，
@@ -607,6 +612,9 @@ async function main() {
       SUPABASE_KEY: 'test-key',
       MASTER_CODE: 'test-master-code',
       MOYI_SETTINGS_TTL_MS: '0',
+      // L 段实例顺带开启浏览器授权，用同一份管理员会话跑完整 OAuth E2E
+      MOYI_OAUTH_CLIENT_ID: 'mcp_test_client',
+      MOYI_OAUTH_REDIRECT_WHITELIST: 'http://127.0.0.1:19999,http://localhost:19999',
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -633,8 +641,8 @@ async function main() {
 
   r = await cons('/setup', 'POST', { username: '掌柜', password: 'correct-horse-battery', instance_name: '藏书阁', open_register: false });
   ok('安装成功并直接下发会话', r.status === 201 && Boolean(r.cookie), r.data);
-  ok('会话 Cookie 带 HttpOnly 与 SameSite=Strict',
-    /HttpOnly/.test(String(r.headers.get('set-cookie'))) && /SameSite=Strict/i.test(String(r.headers.get('set-cookie'))),
+  ok('会话 Cookie 带 HttpOnly 与 SameSite=Lax',
+    /HttpOnly/.test(String(r.headers.get('set-cookie'))) && /SameSite=Lax/i.test(String(r.headers.get('set-cookie'))),
     r.headers.get('set-cookie'));
   const SCK = r.cookie;
 
@@ -849,6 +857,139 @@ async function main() {
   ok('严格模式下跨 agent 删除回 404 而非 403', r.status === 404, r.data);
   const still = await api('/api/memories/' + aId, 'GET', null, KA);
   ok('该记忆仍在（404 不是「已删除」）', still.status === 200, still.status);
+
+  // ── L7.5 MCP 浏览器授权（OAuth：授权码 + PKCE 全流程）──
+  const OKEY = 'mcp_test_client';
+  const RB = 'http://127.0.0.1:19999';   // 白名单内的假回调（不会真有人监听）
+  const oauth = (p, opts = {}) => fetch(CS + '/api/oauth' + p, opts);
+  const pkcePair = () => {
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    return { verifier, challenge };
+  };
+  const authzQuery = (pc, extra = '') =>
+    '?response_type=code&client_id=' + OKEY + '&redirect_uri=' + encodeURIComponent(RB + '/cb')
+    + '&code_challenge=' + pc.challenge + '&code_challenge_method=S256&state=xyz42' + extra;
+
+  // 发现文档
+  let or = await fetch(CS + '/.well-known/oauth-authorization-server');
+  let om = await or.json();
+  ok('AS 元数据指向 authorize/token 且只认 S256',
+    or.status === 200 && /\/api\/oauth\/authorize$/.test(om.authorization_endpoint)
+    && /\/api\/oauth\/token$/.test(om.token_endpoint) && om.code_challenge_methods_supported.join() === 'S256', om);
+  or = await fetch(CS + '/.well-known/oauth-protected-resource');
+  ok('受保护资源元数据指向 /api/mcp', or.status === 200 && /\/api\/mcp$/.test((await or.json()).resource), or.status);
+  or = await fetch(CS + '/api/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  ok('开 OAuth 后 /api/mcp 的 401 带 resource_metadata 发现头',
+    or.status === 401 && /resource_metadata=".*\.well-known\/oauth-protected-resource"/.test(String(or.headers.get('www-authenticate'))),
+    or.headers.get('www-authenticate'));
+
+  // 未登录：只给「先去登录」页，不出同意页
+  or = await oauth('/authorize' + authzQuery(pkcePair()));
+  let page = await or.text();
+  ok('未登录访问 authorize → 登录引导页', or.status === 200 && /请先登录管理台/.test(page), page.slice(0, 120));
+  // redirect 不在白名单：本地报错，绝不回跳到未登记地址
+  or = await oauth('/authorize?response_type=code&client_id=' + OKEY + '&redirect_uri='
+    + encodeURIComponent('http://evil.example/cb') + '&code_challenge=' + pkcePair().challenge + '&code_challenge_method=S256',
+    { redirect: 'manual' });
+  ok('白名单外 redirect_uri → 不 302 回跳', or.status === 400 && !or.headers.get('location'), or.status);
+  // client_id 不对：400/invalid_client，同样不给回跳
+  or = await oauth('/authorize?response_type=code&client_id=nope&redirect_uri=' + encodeURIComponent(RB) + '&code_challenge=' + pkcePair().challenge);
+  ok('未知 client_id → 拒绝', or.status === 400 && /不合法/.test(await or.text()), or.status);
+
+  // 已登录：出同意页
+  or = await oauth('/authorize' + authzQuery(pkcePair()), { headers: { Cookie: CK } });
+  page = await or.text();
+  ok('登录后 authorize 出同意页', or.status === 200 && /同意授权/.test(page) && /mcp_test_client/.test(page), page.slice(0, 80));
+
+  // 完整同意流：authorize → approve(表单) → 302 带 code → token 兑换
+  const pc = pkcePair();
+  await oauth('/authorize' + authzQuery(pc), { headers: { Cookie: CK } });   // 走一遍 GET（模拟浏览器）
+  or = await oauth('/approve', {
+    method: 'POST', redirect: 'manual', headers: { Cookie: CK },
+    body: new URLSearchParams({ response_type: 'code', client_id: OKEY, redirect_uri: RB + '/cb',
+      state: 'xyz42', code_challenge: pc.challenge, code_challenge_method: 'S256', decision: 'approve' }),
+  });
+  const loc = or.headers.get('location') || '';
+  const code = (loc.match(/[?&]code=([^&]+)/) || [])[1];
+  ok('同意 → 302 回跳带一次性 code 且原样回传 state',
+    or.status === 302 && Boolean(code) && /[?&]state=xyz42(&|$)/.test(loc), loc.slice(0, 100));
+  or = await oauth('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: pc.verifier,
+      redirect_uri: RB + '/cb', client_id: OKEY }) });
+  const tok = or.status === 200 ? await or.json() : {};
+  ok('code + verifier 换到 access/refresh（Bearer，带 no-store）',
+    or.status === 200 && /^moat_/.test(tok.access_token || '') && /^morf_/.test(tok.refresh_token || '')
+    && tok.token_type === 'Bearer' && /no-store/.test(String(or.headers.get('cache-control'))), tok);
+  or = await oauth('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', code, code_verifier: pc.verifier,
+      redirect_uri: RB + '/cb', client_id: OKEY }) });
+  ok('同一 code 二次兑换 → invalid_grant（一次性）', or.status === 400 && (await or.json()).error === 'invalid_grant', or.status);
+
+  // access token 当 Bearer 打进 /api/mcp：身份是新建的专用 Agent，读写自己的记忆
+  or = await fetch(CS + '/api/mcp', { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok.access_token },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'memory_save', arguments: { content: 'OAuth 冒烟：主人喜欢雨后天青色', force: true } } }) });
+  const saved = or.status === 200 ? await or.json() : {};
+  ok('access token 可调 MCP 工具（memory_save 走通）',
+    /已记住/.test(((saved.result || {}).content || [])[0] && saved.result.content[0].text || ''), saved);
+  or = await fetch(CS + '/api/mcp', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok.access_token },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: 'memory_search', arguments: { query: '青色' } } }) });
+  const found = await or.json();
+  ok('OAuth Agent 检索得到自己刚写的记忆',
+    /青色/.test(((found.result || {}).content || [])[0] && found.result.content[0].text || ''), found);
+  or = await fetch(CS + '/api/mcp', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok.access_token },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call',
+      params: { name: 'memory_audit_log', arguments: {} } }) });
+  const au = await or.json();
+  ok('OAuth Agent 是普通 agent（audit 仍回仅 master）',
+    /仅 master/.test(((au.result || {}).content || [])[0] && au.result.content[0].text || ''), au);
+  // 同意页表单被别的站点偷 POST：Origin 不符直接拒
+  or = await oauth('/approve', { method: 'POST', redirect: 'manual',
+    headers: { Cookie: CK, Origin: 'https://evil.example' },
+    body: new URLSearchParams({ response_type: 'code', client_id: OKEY, redirect_uri: RB, code_challenge: pc.challenge, decision: 'approve' }) });
+  ok('跨站 Origin 的 approve → 403', or.status === 403, or.status);
+  // verifier 错了拿不到 token：即使 code 是真的（先重新走一遍同意）
+  const pc2 = pkcePair();
+  or = await oauth('/approve', { method: 'POST', redirect: 'manual', headers: { Cookie: CK },
+    body: new URLSearchParams({ response_type: 'code', client_id: OKEY, redirect_uri: RB + '/cb',
+      code_challenge: pc2.challenge, code_challenge_method: 'S256', decision: 'approve' }) });
+  const code2 = ((or.headers.get('location') || '').match(/[?&]code=([^&]+)/) || [])[1];
+  or = await oauth('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'authorization_code', code: code2,
+      code_verifier: crypto.randomBytes(32).toString('base64url'), redirect_uri: RB + '/cb' }) });
+  ok('verifier 不匹配 → invalid_grant（PKCE 挡住截获的 code）',
+    or.status === 400 && (await or.json()).error === 'invalid_grant', or.status);
+  // 点「拒绝」：回跳必须带 error=access_denied，且不留 code
+  or = await oauth('/approve', { method: 'POST', redirect: 'manual', headers: { Cookie: CK },
+    body: new URLSearchParams({ response_type: 'code', client_id: OKEY, redirect_uri: RB + '/cb',
+      state: 'deny1', code_challenge: pc2.challenge, code_challenge_method: 'S256', decision: 'deny' }) });
+  const dloc = or.headers.get('location') || '';
+  ok('拒绝 → 回跳带 error=access_denied', or.status === 302 && /error=access_denied/.test(dloc) && /state=deny1/.test(dloc), dloc);
+  // refresh 续期
+  or = await oauth('/token', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: tok.refresh_token, client_id: OKEY }) });
+  const tok2 = or.status === 200 ? await or.json() : {};
+  ok('refresh 换到新 access token', or.status === 200 && /^moat_/.test(tok2.access_token || '')
+    && tok2.access_token !== tok.access_token, tok2);
+  or = await oauth('/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'morf_bogus' }).toString() });
+  ok('伪造 refresh token → invalid_grant', or.status === 400 && (await or.json()).error === 'invalid_grant', or.status);
+  // 管理台删除 OAuth Agent → token 失效（5s 授权缓存是吊销的最大延迟）
+  // 注意要删「全部」同名 Agent：上面跑了两次 approve（第二次是故意验 PKCE 失败），
+  // 每次都建了一个专属 Agent，只删最新那个的话旧 token 仍然有效。
+  const oas = (await cons('/agents', 'GET', null, CK)).data.agents.filter(a => a.name === 'oauth:' + OKEY);
+  ok('同意时创建的专用 Agent 出现在管理台', oas.length === 2, oas.map(a => a.name));
+  for (const a of oas) await cons('/agents/' + a.id, 'DELETE', {}, CK);
+  await sleep(5200);
+  or = await fetch(CS + '/api/mcp', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok.access_token },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} }) });
+  ok('管理台删除该 Agent 后 access token 失效（401）', or.status === 401, or.status);
 
   // ── L8 退出与表缺失 ──
   r = await cons('/logout', 'POST', {}, CK);

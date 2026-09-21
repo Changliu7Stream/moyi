@@ -5,7 +5,8 @@
  *  1. 页面该显示什么由 /console/status 决定，不由本地存的那个标记决定 ——
  *     引导页是一次性的，服务端说装好了就永远不再出现，防止「清 localStorage
  *     就能重跑安装器」这类想当然的绕过。
- *  2. 所有写请求都带 X-Moyi-Console: 1。会话 Cookie 是 SameSite=Strict，
+ *  2. 所有写请求都带 X-Moyi-Console: 1。会话 Cookie 是 SameSite=Lax（跨站 POST
+ *     不带 Cookie；用 Lax 而非 Strict 是为了让 MCP 浏览器授权的顶层跳转能带上它），
  *     这一头是第二道闸：跨站表单发不出自定义头，跨站 fetch 又要过 CORS 白名单。
  *  3. 这里拿不到任何记忆正文。管理台只显示条数 —— 管理员是「管工具的人」，
  *     不是「读别人日记的人」。想看内容得用那个 Agent 自己的 key。

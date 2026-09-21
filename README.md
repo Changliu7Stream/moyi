@@ -145,7 +145,7 @@ cp .env.example .env.local     # 填入 MOYI_DB_URL / MOYI_DB_TOKEN / MOYI_CODE
 
 #### 2. 初始化数据库
 
-- **Supabase**：后台 → SQL Editor → **按顺序执行两份**：先 `sql/00-schema.sql`（建五张表），
+- **Supabase**：后台 → SQL Editor → **按顺序执行两份**：先 `sql/00-schema.sql`（建七张表），
   再 `sql/vector-search.sql`（开 RLS + 建 RPC）。只跑后者会报
   `relation "public.agents" does not exist`——那份脚本不建 `agents` / `memories`，
   它是给表已存在的旧库做升级用的。
@@ -189,6 +189,21 @@ node server.js
 ```
 
 `MOYI_API` 指向线上 https 地址同样可用。
+
+客户端支持远程 HTTP 时，可以完全不装 Node、不起 stdio 进程——管理台创建 Agent 后给出的另一段配置直连 `/api/mcp`：
+
+```json
+{
+  "mcpServers": {
+    "moyi": {
+      "url": "https://your-host/api/mcp",
+      "headers": { "Authorization": "Bearer moyi_xxxxxxxx" }
+    }
+  }
+}
+```
+
+两段配置是并列可选项，也可以同时挂上。再进一步，设置 `MOYI_OAUTH_CLIENT_ID`（并按需配 `MOYI_OAUTH_REDIRECT_WHITELIST`）即可开启**浏览器授权**：MCP 客户端自己拉起浏览器、走授权码 + PKCE，你在已登录的管理台点「同意」，它拿到的是一把专属 `moat_` token，不必复制粘贴密钥。撤销方式就是管理台删掉那个自动创建的 `oauth:<client_id>` Agent。详见 `docs/agents.html#oauth`。
 
 ---
 
@@ -462,7 +477,7 @@ raw衰减  = exp( -(年龄天数 / (1 + access_count)) / 半衰期 )
 | 会话可真正作废 | 不透明随机 token，库里只存 sha256；不用自签 JWT（那种做不到退出即失效） |
 | 改口令 / 停用 → 踢掉全部旧会话 | `admins.session_version` 与会话行里的版本号比对，不需要吊销列表 |
 | 防用户名枚举 | 用户不存在与口令错回同一句话、同一状态码 |
-| 防 CSRF | Cookie `HttpOnly; SameSite=Strict`，写操作另需 `X-Moyi-Console: 1` 头（跨站表单发不出自定义头） |
+| 防 CSRF | Cookie `HttpOnly; SameSite=Lax`（跨站 POST 不带 Cookie；用 Lax 而非 Strict 是为了让 MCP 浏览器授权的顶层跳转能带上会话），写操作另需 `X-Moyi-Console: 1` 头（跨站表单发不出自定义头） |
 | 口令暴破限速 | `MOYI_ADMIN_FAIL_PER_15MIN`（默认 10），与 Agent Key 的计数器**分开**——一方试错不该把另一方锁在门外 |
 | 不把实例锁死 | 不能停用/降级/删除自己；停用或删除最后一个可用超管被拒 |
 | 不自我提权 | 控制台建 Agent 一律 `role=agent`，不接受客户端传 `master`（master 在 Agent 侧能读审计、给他人回填向量） |
@@ -645,6 +660,9 @@ HEALTHCHECK 用 busybox `wget --spider` 探根路径（管理页能返回即算�
   和审计日志同一类限制。
 - **自托管栈的 agent 隔离在服务层**，PostgREST 本身没有隔离概念——
   一旦把它暴露到公网，等于全库公开。
+- **浏览器授权是精简子集，不做动态注册**。client_id 与回调白名单由环境变量写死，
+  只有一个整实例的 `mcp` scope，同意人固定是已登录管理员；撤销粒度是「删掉那个 Agent」。
+  这几项留给后续里程碑，也因此它降低的是「发钥匙」的门槛，没有引入新的权限面。
 - **Vercel 部署下限速与审计基本无效**：无状态多实例各自计数。要限速请放反代
   或单长驻进程（Docker 那条路）。
 - **Cloudflare Workers / Pages 仅付费版可用**：scrypt 单次约几十毫秒 CPU，
