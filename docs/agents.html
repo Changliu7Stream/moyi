@@ -107,7 +107,7 @@
 <p class="box-t">这一版刻意没做的：动态注册与细粒度 scope</p>
 <p>client_id 与 redirect_uri 白名单<b>由服务端环境变量写死</b>，不支持 RFC 7591 动态注册；token 是整实例一个 <code>mcp</code> scope，不分读写。授权同意人固定是「已登录的管理员」，因为墨忆没有 Agent 侧的浏览器登录。这几项都留给后续里程碑。</p>
 </div>
-<p>安全边界：PKCE 强制 <code>S256</code>，授权码一次性、60 秒过期；redirect_uri 必须精确命中白名单，拒绝带 <code>#fragment</code> 或 <code>user@</code> 的地址（防开放重定向）；同意表单额外校验 <code>Origin</code> 等于本站。token 只存 sha256 哈希，明文只在签发瞬间出现一次。端点逐条清单见 <a href="api.html#oauth">接口清单页的浏览器授权一节</a>。</p>
+<p>安全边界：PKCE 强制 <code>S256</code>，授权码一次性、60 秒过期；redirect_uri 必须精确命中白名单，拒绝带 <code>#fragment</code> 或 <code>user@</code> 的地址（防开放重定向）；同意表单额外校验 <code>Origin</code> 等于本站。token 只存 sha256 哈希，明文只在签发瞬间出现一次。<b>refresh token 本版不轮转</b>：同一把 refresh 可在自己的 30 天内反复换 access，所以「检测到重放并连坐吊销」这类防护暂时谈不上——真出事时的处置手段仍然是管理台删掉那个 Agent。端点逐条清单见 <a href="api.html#oauth">接口清单页的浏览器授权一节</a>。</p>
 
 <h2 id="global">全局记忆：只放宽「能读到谁」</h2>
 <p>管理台 → 设置 → 打开「全局记忆」。生效范围用一句话概括：</p>
